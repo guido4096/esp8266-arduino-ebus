@@ -131,3 +131,15 @@ TEST_CASE("AppConfig::collectDrift reports staged keys only", "[app_config]") {
   REQUIRE(keys[0] == "ebusAddress");
   REQUIRE(keys[1] == "mqttEnabled");
 }
+
+TEST_CASE("INTERNAL config rejects unsafe combined arbitration timing", "[app_config][timing]") {
+  AppConfig cfg;
+  cfg.reset();
+  cfg.bus.window_us = 4400;
+  cfg.bus.offset_us = 200;
+  REQUIRE_FALSE(cfg.isValid());
+  cfg.bus.offset_us = 0;
+  REQUIRE(cfg.isValid());
+  cfg.bus.window_us = 4500;
+  REQUIRE_FALSE(cfg.isValid());
+}

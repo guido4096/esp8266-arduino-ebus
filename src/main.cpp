@@ -20,9 +20,6 @@
 ConfigManager config_manager;
 
 extern "C" void app_main(void) {
-  debug_ser.begin(115200);
-  debug_ser.setDebugOutput(true);
-
   logger.info("Starting esp-ebus adapter version " AUTO_VERSION);
 
 #if defined(EBUS_INTERNAL)

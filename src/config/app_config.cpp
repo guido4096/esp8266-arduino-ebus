@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "app/app_limits.hpp"
+#include <ebus/detail/esp_timing.hpp>
 
 void AppConfig::reset() {
   *this = AppConfig{};
@@ -43,6 +44,9 @@ bool AppConfig::isValid() const {
   // Note: offset_min_us is 0 and offset_us unsigned, so only the upper
   // bound is checked (a `< min` comparison would be dead code).
   if (bus.offset_us > app::limits::Bus::offset_max_us) return false;
+#if defined(EBUS_INTERNAL)
+  if (!ebus_timing::targetValid(bus.window_us, bus.offset_us)) return false;
+#endif
 
   return true;
 }

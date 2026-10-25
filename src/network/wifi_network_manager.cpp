@@ -405,7 +405,16 @@ void WifiNetworkManager::handleEvent(
   } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
     sta_connected_ = false;
     setStatusLedMode(StatusLedMode::slow_blink);
-    logger.warn("STA disconnected");
+    if (event_data != nullptr) {
+      const auto* disconnected =
+          static_cast<const wifi_event_sta_disconnected_t*>(event_data);
+      char message[64];
+      std::snprintf(message, sizeof(message), "STA disconnected: reason=%u",
+                    static_cast<unsigned>(disconnected->reason));
+      logger.warn(message);
+    } else {
+      logger.warn("STA disconnected: reason unavailable");
+    }
 
     if (++consecutive_failures_ == max_consecutive_failures) logWifiSlice();
 

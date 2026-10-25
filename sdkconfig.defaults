@@ -29,6 +29,13 @@ CONFIG_MQTT_BUFFER_SIZE=1024
 CONFIG_MQTT_TASK_STACK_SIZE=8192
 
 
+# INTERNAL eBUS deadlines must survive cache-disabled flash operations.
+CONFIG_GPTIMER_ISR_CACHE_SAFE=y
+CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y
+CONFIG_UART_ISR_IN_IRAM=y
+# GPIO20/21 belong to eBUS; never route the application console there.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
-
-
+# ESP32-C3 v5.x hardware and min_spiffs.csv use the full 4 MB flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y

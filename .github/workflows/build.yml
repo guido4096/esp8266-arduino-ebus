@@ -16,13 +16,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
-    - name: Check ebus pin sync
-      run: |
-        INI_PIN=$(grep -oP 'ebus\.git#\K[0-9a-f]{40}' platformio.ini)
-        CMAKE_PIN=$(grep -oP 'set\(EBUS_PIN\s+\K[0-9a-f]{40}' test_host/CMakeLists.txt)
-        echo "platformio.ini: $INI_PIN"
-        echo "EBUS_PIN:       $CMAKE_PIN"
-        [ -n "$INI_PIN" ] && [ "$INI_PIN" = "$CMAKE_PIN" ] || { echo "Pin mismatch!"; exit 1; }
+    - name: Check out eBUS fork
+      run: git clone --depth 1 --branch improve-timing https://github.com/guido4096/ebus.git ../ebus
     - name: Generate profile headers
       run: |
         python3 scripts/generate_data_profiles.py
@@ -44,6 +39,8 @@ jobs:
       with:
         fetch-depth: 0
         fetch-tags: true
+    - name: Check out eBUS fork
+      run: git clone --depth 1 --branch improve-timing https://github.com/guido4096/ebus.git ../ebus
     - uses: actions/cache@v4
       with:
         path: |
