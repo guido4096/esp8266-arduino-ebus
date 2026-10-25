@@ -60,7 +60,7 @@
     ]
   },
   {
-    "key": "hk2_room",
+    "key": "hc2_room",
     "name": "Weishaupt/Circuit_2_Downstairs/Room_temperature",
     "read_cmd": "51501407",
     "write_cmd": "",
@@ -75,7 +75,7 @@
     ]
   },
   {
-    "key": "hk2_flow_set",
+    "key": "hc2_flow_set",
     "name": "Weishaupt/Circuit_2_Downstairs/Target_flow_temperature",
     "read_cmd": "51501407",
     "write_cmd": "",
@@ -90,7 +90,7 @@
     ]
   },
   {
-    "key": "hk2_flow",
+    "key": "hc2_flow",
     "name": "Weishaupt/Circuit_2_Downstairs/Flow_temperature",
     "read_cmd": "51501407",
     "write_cmd": "",
@@ -105,7 +105,7 @@
     ]
   },
   {
-    "key": "hk2_normal",
+    "key": "hc2_normal",
     "name": "Weishaupt/Circuit_2_Downstairs/Normal_room_setpoint",
     "read_cmd": "75502203700500",
     "write_cmd": "70502309000500",
@@ -123,7 +123,7 @@
     "write_type": "weishaupt"
   },
   {
-    "key": "hk2_reduced",
+    "key": "hc2_reduced",
     "name": "Weishaupt/Circuit_2_Downstairs/Reduced_room_setpoint",
     "read_cmd": "75502203580800",
     "write_cmd": "70502309000800",
@@ -141,7 +141,7 @@
     "write_type": "weishaupt"
   },
   {
-    "key": "hk3_room",
+    "key": "hc3_room",
     "name": "Weishaupt/Circuit_3_Upstairs/Room_temperature",
     "read_cmd": "52501407",
     "write_cmd": "",
@@ -156,7 +156,7 @@
     ]
   },
   {
-    "key": "hk3_flow_set",
+    "key": "hc3_flow_set",
     "name": "Weishaupt/Circuit_3_Upstairs/Target_flow_temperature",
     "read_cmd": "52501407",
     "write_cmd": "",
@@ -171,7 +171,7 @@
     ]
   },
   {
-    "key": "hk3_flow",
+    "key": "hc3_flow",
     "name": "Weishaupt/Circuit_3_Upstairs/Flow_temperature",
     "read_cmd": "52501407",
     "write_cmd": "",
@@ -186,7 +186,7 @@
     ]
   },
   {
-    "key": "hk3_normal",
+    "key": "hc3_normal",
     "name": "Weishaupt/Circuit_3_Upstairs/Normal_room_setpoint",
     "read_cmd": "f5502203700500",
     "write_cmd": "f0502309000500",
@@ -204,7 +204,7 @@
     "write_type": "weishaupt"
   },
   {
-    "key": "hk3_reduced",
+    "key": "hc3_reduced",
     "name": "Weishaupt/Circuit_3_Upstairs/Reduced_room_setpoint",
     "read_cmd": "f5502203580800",
     "write_cmd": "f0502309000800",
@@ -222,7 +222,7 @@
     "write_type": "weishaupt"
   },
   {
-    "key": "hk4_flow",
+    "key": "hc4_flow",
     "name": "Weishaupt/Circuit_4_Underfloor_heating/Flow_temperature",
     "read_cmd": "53502203900f00",
     "write_cmd": "",
@@ -237,7 +237,7 @@
     ]
   },
   {
-    "key": "hk4_normal",
+    "key": "hc4_normal",
     "name": "Weishaupt/Circuit_4_Underfloor_heating/Normal_room_setpoint",
     "read_cmd": "1c502203700500",
     "write_cmd": "17502309000500",
@@ -255,7 +255,7 @@
     "write_type": "weishaupt"
   },
   {
-    "key": "hk4_reduced",
+    "key": "hc4_reduced",
     "name": "Weishaupt/Circuit_4_Underfloor_heating/Reduced_room_setpoint",
     "read_cmd": "1c502203580800",
     "write_cmd": "17502309000800",
