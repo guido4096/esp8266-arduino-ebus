@@ -523,7 +523,10 @@ void Cron::tick() {
           ebus::makeSequence(command->getWriteCmd(command_manager));
       full_write.append(value_bytes);
 
-      getEbusController().enqueue(app::priority::send, full_write);
+      if (getEbusController().enqueue(app::priority::send, full_write) == 0) {
+        logger.warn("Cron skipped: unable to queue write command");
+        continue;
+      }
 
       char info_buf[160];
       snprintf(info_buf, sizeof(info_buf), "Cron write triggered: %s -> %s",

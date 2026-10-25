@@ -733,7 +733,10 @@ void Mqtt::handleWrite(std::string_view payload) {
           ebus::makeSequence(command->getWriteCmd(command_manager));
       full_write.append(value_bytes);
 
-      getEbusController().enqueue(app::priority::send, full_write);
+      if (getEbusController().enqueue(app::priority::send, full_write) == 0) {
+        publishResponse("write", "Unable to queue write command");
+        return;
+      }
       publishStream("response", 0, false,
                     [command, key_view](const ebus::JsonChunkVisitor& v) {
                       ebus::detail::JsonWriter writer(v);
@@ -805,7 +808,10 @@ void Mqtt::handleDirectWrite(std::string_view key, std::string_view val_view) {
     ebus::Sequence full_write =
         ebus::makeSequence(command->getWriteCmd(command_manager));
     full_write.append(value_bytes);
-    getEbusController().enqueue(app::priority::send, full_write);
+    if (getEbusController().enqueue(app::priority::send, full_write) == 0) {
+      logger.warn("[MQTT] Unable to queue write command");
+      return;
+    }
     command->setLast(0);
     char buf[128];
     snprintf(buf, sizeof(buf), "[MQTT] Scheduled write for '%.*s'",
