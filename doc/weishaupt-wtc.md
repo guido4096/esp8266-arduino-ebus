@@ -81,7 +81,7 @@ De vier schrijfcommando's hebben een prefix van zeven bytes:
 `destination 50 23 09 00 parameter_lo parameter_hi`.
 `Command::buildWriteSequence` voegt de twee waardebytes en `5d010000` toe en
 vervangt de nul op payloadpositie 1 door de berekende interne checksum.
-Alleen commando's met `"weishaupt_write": true` gebruiken deze opbouw.
+Alleen commando's met `"write_type": "weishaupt"` gebruiken deze opbouw.
 Deze opbouw geldt voor HTTP, MQTT en cron. Andere schrijfcommando's behouden
 hun bestaande opbouw: prefix gevolgd door de gecodeerde waarde.
 

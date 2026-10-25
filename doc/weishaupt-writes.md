@@ -9,7 +9,7 @@ value to `write_cmd` without modifying either byte sequence.
 
 ```json
 {
-  "key": "hc2_normal",
+  "key": "hk2_normal",
   "name": "Weishaupt/Circuit_2_Downstairs/Normal_room_setpoint",
   "read_cmd": "75502203700500",
   "write_cmd": "70502309000500",
@@ -40,7 +40,7 @@ HTTP, MQTT and cron use the same write builder. For HTTP:
 
 ```sh
 curl -f -X POST -H 'Content-Type: application/json' \
-  --data '{"key":"hc2_normal","value":21}' \
+  --data '{"key":"hk2_normal","value":21}' \
   http://ADAPTER-IP/api/v1/app/values/write
 ```
 

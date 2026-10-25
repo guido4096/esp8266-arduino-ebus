@@ -128,6 +128,6 @@ known late transmission; sustained contention can reduce throughput.
 Gebruik `own/all-changes` in de firmware-repo en `improve-timing` in de
 eBUS-repo. Deze combinatie bevat de losse upstream-bugfixes, de optionele
 Weishaupt-uitbreiding en de lokale timing-integratie.
-`config/weishaupt-wtc.json` schakelt `weishaupt_write` expliciet in voor de
+`config/weishaupt-wtc.json` stelt `"write_type": "weishaupt"` expliciet in voor de
 zes normale/verlaagde temperatuurinstellingen. De JSON wordt niet automatisch
 geïnstalleerd; upload hem na het flashen van deze firmware.
