@@ -25,9 +25,9 @@ It turns the adapter into a **network-connected eBUS interface** with TCP, MQTT,
 
 ### Two firmware variants
 
-- **Bridge** (`esp32-c3`, default) — transparent bus interface for external
+- **Bridge** (`esp32-c3`) — transparent bus interface for external
   software like `ebusd` on another host. No autonomous participation.
-- **INTERNAL** (`esp32-c3-internal`) — autonomous participant: polls,
+- **INTERNAL** (`esp32-c3-internal`, default) — autonomous participant: polls,
   commands, MQTT/HA on-device, no external software needed.
 
 Details: wiki [5. Bridge mode](https://github.com/danielkucera/esp-ebus/wiki/5.-Bridge-mode) and
@@ -37,10 +37,16 @@ Details: wiki [5. Bridge mode](https://github.com/danielkucera/esp-ebus/wiki/5.-
 
 ## Build and Flash
 
-The project uses PlatformIO with the ESP-IDF framework. Install PlatformIO,
-clone this repository, and run commands from the repository root.
+The default build is the standalone INTERNAL firmware (`pio run`). Its hardware
+timer arbitration, local eBUS fork, and board validation procedure are
+described in [INTERNAL timing](doc/internal-timing.md).
 
-Build the default network bridge firmware:
+The project uses PlatformIO with the ESP-IDF framework. Install PlatformIO,
+clone this repository and your [eBUS fork](https://github.com/guido4096/ebus)
+side by side (this project expects `../ebus`), and run commands from the
+repository root. Check out the `improve-timing` branch in the eBUS fork.
+
+Build the network bridge firmware explicitly:
 
 ```bash
 pio run -e esp32-c3

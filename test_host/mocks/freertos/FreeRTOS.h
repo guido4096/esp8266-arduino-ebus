@@ -1,13 +1,13 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+
 // Minimal FreeRTOS type definitions for host testing
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <cstddef>
-#include <cstdint>
 
 typedef void* TaskHandle_t;
 typedef void* QueueHandle_t;

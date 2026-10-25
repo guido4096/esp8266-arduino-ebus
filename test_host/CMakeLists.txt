@@ -5,36 +5,23 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Same platform define as the ebus library itself (it add_definitions(-DPOSIX)
-# on Linux): BusConfig/Controller layouts depend on it, and mismatched
+# on Linux; also needed for macOS): BusConfig/Controller layouts depend on it, and mismatched
 # defines between the lib and these TUs are an ODR violation (exit crash).
-if(UNIX AND NOT APPLE)
+if(UNIX)
+    set(POSIX ON)
     add_definitions(-DPOSIX)
 endif()
 
 # Project root is one level up from test_host/
 set(PROJECT_ROOT ${CMAKE_CURRENT_LIST_DIR}/..)
 
-# ebus source: local working tree when the lib/ebus symlink is present,
-# pinned FetchContent otherwise (CI has no symlink). Keep EBUS_PIN in sync
-# with the lib_deps pin in platformio.ini.
-set(EBUS_PIN f730dce62ca1ce831badebba75ffb537da40d1e2)
-if(EXISTS ${PROJECT_ROOT}/lib/ebus/CMakeLists.txt)
-    set(EBUS_SOURCE_DIR ${PROJECT_ROOT}/lib/ebus)
-    # No host utilities in test builds (faster configure/build).
-    set(EBUS_BUILD_TOOLS OFF)
-    add_subdirectory(${EBUS_SOURCE_DIR} ${CMAKE_BINARY_DIR}/ebus-lib)
-else()
-    include(FetchContent)
-    FetchContent_Declare(
-        ebus
-        GIT_REPOSITORY https://github.com/yuhu-/ebus.git
-        GIT_TAG ${EBUS_PIN}
-    )
-    # No host utilities in test builds (set before MakeAvailable).
-    set(EBUS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(ebus)
-    set(EBUS_SOURCE_DIR ${ebus_SOURCE_DIR})
+# Use the same sibling fork as PlatformIO; never patch a downloaded cache.
+set(EBUS_SOURCE_DIR "${PROJECT_ROOT}/../ebus" CACHE PATH "Local eBUS fork")
+if(NOT EXISTS "${EBUS_SOURCE_DIR}/src/ebus/core/syn_timing.hpp")
+    message(FATAL_ERROR "eBUS fork with timing changes required at ${EBUS_SOURCE_DIR}. Set EBUS_SOURCE_DIR to override.")
 endif()
+set(EBUS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+add_subdirectory("${EBUS_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/ebus-lib")
 
 # Catch2: always our own FetchContent (hermetic, version-pinned like ebus).
 include(FetchContent)
@@ -163,8 +150,10 @@ target_link_libraries(app_tests PRIVATE
 
 add_executable(config_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/config/app_config_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/hardware/ebus_timing_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config/config_manager_tests.cpp
 )
+target_include_directories(config_tests PRIVATE ${EBUS_SOURCE_DIR}/src/ebus)
 target_link_libraries(config_tests PRIVATE
     config_test_support
     Catch2::Catch2WithMain
@@ -269,6 +258,7 @@ find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
     add_test(NAME config_page_defaults
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/web/config_page_tests.cjs)
+    # Also permits using VS Code's bundled Node runtime on developer machines.
     set_tests_properties(config_page_defaults PROPERTIES ENVIRONMENT "ELECTRON_RUN_AS_NODE=1")
 endif()
 include(CTest)
