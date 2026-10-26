@@ -122,6 +122,7 @@ void CommandManager::insertCommand(Command command) {
     if (std::string_view(commands_[i].getKey()) ==
         std::string_view(command.getKey())) {
       cancelDelayedWrite(commands_[i].getKeyId());
+      supersedeWrite(commands_[i], "command_replaced");
       uint16_t old_poll_id = commands_[i].getPollId();
       commands_[i] = std::move(command);
       commands_[i].setPollId(old_poll_id);
@@ -140,6 +141,7 @@ void CommandManager::removeCommand(std::string_view key) {
     if (std::string_view(commands_[i].getKey()) == key) {
       uint8_t removed_key_id = commands_[i].getKeyId();
       cancelDelayedWrite(removed_key_id);
+      supersedeWrite(commands_[i], "command_removed");
       if (command_removed_callback_) command_removed_callback_(&commands_[i]);
       commands_.erase(commands_.begin() + i);
       removeFieldOverrides(removed_key_id);
@@ -153,12 +155,8 @@ void CommandManager::removeAll() {
   for (size_t i = commands_.size(); i-- > 0;) {
     if (command_removed_callback_) command_removed_callback_(&commands_[i]);
   }
+  cancelWrites();
   commands_.clear();
-  for (const auto& pending : delayed_writes_) {
-    writeLog(pending.request_id, StringPool::instance().lookup(pending.key_id),
-             "cancelled", "reason=commands_cleared");
-  }
-  delayed_writes_.clear();
   clearFieldOverrides();
 }
 
@@ -309,12 +307,8 @@ int64_t CommandManager::saveCommands() const {
 
 int64_t CommandManager::wipeCommands() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  cancelWrites();
   commands_.clear();
-  for (const auto& pending : delayed_writes_) {
-    writeLog(pending.request_id, StringPool::instance().lookup(pending.key_id),
-             "cancelled", "reason=commands_cleared");
-  }
-  delayed_writes_.clear();
   clearFieldOverrides();
   if (!ensureLittlefsMounted()) return -1;
 
@@ -544,12 +538,15 @@ bool CommandManager::queueWriteAt(std::string_view key, ebus::ByteView message,
   writeLog(request_id, key, "received", detail);
 
   if (delay_ms == 0) {
-    const auto session_id = getEbusController().enqueue(app::priority::send, message);
+    const auto session_id = getEbusController().enqueueReplacing(
+        app::priority::send, message, command->getWriteSessionId());
     if (session_id == 0) {
       writeLog(request_id, key, "rejected", "reason=bus_queue_unavailable");
       return false;
     }
     cancelDelayedWrite(command->getKeyId(), "superseded_by_immediate_write");
+    supersedeWrite(*command, "newer_request", request_id);
+    command->setWriteSessionId(session_id);
     trackWrite(request_id, command->getKeyId(), session_id, message);
     return true;
   } else {
@@ -562,6 +559,7 @@ bool CommandManager::queueWriteAt(std::string_view key, ebus::ByteView message,
         pending.request_id = request_id;
         pending.message.assign(message);
         pending.due_ms = now_ms + delay_ms;
+        supersedeWrite(*command, "newer_request", request_id);
         return true;
       }
     }
@@ -574,6 +572,7 @@ bool CommandManager::queueWriteAt(std::string_view key, ebus::ByteView message,
       writeLog(request_id, key, "rejected", "reason=delayed_queue_full");
       return false;
     }
+    supersedeWrite(*command, "newer_request", request_id);
     writeLog(request_id, key, "waiting");
     return true;
   }
@@ -590,8 +589,11 @@ void CommandManager::cancelDelayedWrite(uint8_t key_id, const char* reason) {
   }
 }
 
-void CommandManager::clearDelayedWrites() {
+void CommandManager::cancelWrites() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  for (auto& command : commands_) {
+    supersedeWrite(command, "writes_cancelled");
+  }
   for (const auto& pending : delayed_writes_) {
     writeLog(pending.request_id, StringPool::instance().lookup(pending.key_id),
              "cancelled", "reason=pending_writes_cleared");
@@ -617,8 +619,8 @@ void CommandManager::processDelayedWritesAt(uint64_t now_ms) {
       const auto session_id =
           getEbusController().enqueue(app::priority::send, it->message);
       if (session_id != 0) {
+        command->setWriteSessionId(session_id);
         trackWrite(it->request_id, it->key_id, session_id, it->message);
-        requestCommandRead(*command);
       } else {
         writeLog(it->request_id, key, "rejected", "reason=bus_queue_unavailable");
         logger.warn("Delayed write could not be queued for key: " +
@@ -630,31 +632,55 @@ void CommandManager::processDelayedWritesAt(uint64_t now_ms) {
   }
 }
 
+void CommandManager::supersedeWrite(Command& command, const char* reason,
+                                     uint32_t replacement_request_id) {
+  const auto session_id = command.getWriteSessionId();
+  if (session_id == 0) return;
+  getEbusController().cancel(session_id);
+  command.setWriteSessionId(0);
+  uint32_t request_id = 0;
+  for (auto& trace : write_traces_) {
+    if (trace.session_id == session_id) {
+      trace.superseded = true;
+      request_id = trace.request_id;
+      break;
+    }
+  }
+  char detail[160];
+  snprintf(detail, sizeof(detail), "reason=%s replacement_req=%lu",
+           reason, static_cast<unsigned long>(replacement_request_id));
+  writeLog(request_id, command.getKey(), "superseded", detail, session_id);
+}
+
 void CommandManager::trackWrite(uint32_t request_id, uint8_t key_id,
                                  uint32_t session_id, ebus::ByteView message) {
   // Bounded diagnostic history only; eviction never changes bus scheduling.
   if (write_traces_.size() == write_traces_.capacity()) {
     write_traces_.erase(write_traces_.begin());
   }
-  write_traces_.push_back({request_id, session_id, key_id, false});
+  write_traces_.push_back({request_id, session_id, key_id, false, false});
   writeLog(request_id, StringPool::instance().lookup(key_id), "bus_queued",
            "telegram=" + ebus::toString(message), session_id);
 }
 
-void CommandManager::logWriteResult(const ebus::ProtocolInfo& info) {
+void CommandManager::handleWriteResult(const ebus::ProtocolInfo& info) {
   if (info.session_id == 0) return;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   for (auto& trace : write_traces_) {
     if (trace.session_id != info.session_id || trace.terminal_logged) continue;
     const auto key = StringPool::instance().lookup(trace.key_id);
-    if (info.is_error && info.protocol_error == ebus::ProtocolError::arbitration_lost) {
+    if (trace.superseded) {
+      trace.terminal_logged = true;
+      writeLog(trace.request_id, key,
+               info.is_error ? "bus_error_superseded" : "bus_success_superseded",
+               "readback_suppressed", info.session_id);
+    } else if (info.is_error && info.protocol_error == ebus::ProtocolError::arbitration_lost) {
       trace.terminal_logged = true;
       char detail[128];
       snprintf(detail, sizeof(detail), "reason=arbitration_attempts_exhausted attempts=%u",
                info.attempts);
       writeLog(trace.request_id, key, "bus_failed", detail, info.session_id);
     } else if (info.is_error) {
-      // Library callbacks include attempt errors, not just terminal failures.
       char detail[192];
       snprintf(detail, sizeof(detail), "error=%s attempts=%u retries=library_managed",
                ebus::toString(info.protocol_error), info.attempts);
@@ -664,7 +690,22 @@ void CommandManager::logWriteResult(const ebus::ProtocolInfo& info) {
       writeLog(trace.request_id, key, "bus_success",
                "device_value_not_yet_confirmed", info.session_id);
     }
-    return;
+    break;
+  }
+
+  // Functional session tracking lives on the command, independently of the
+  // bounded diagnostic history. Late results for superseded writes cannot
+  // trigger readback for a newer value.
+  for (auto& command : commands_) {
+    if (command.getWriteSessionId() != info.session_id) continue;
+    if (!info.is_error) {
+      command.setWriteSessionId(0);
+      requestCommandRead(command);
+    } else if (info.protocol_error == ebus::ProtocolError::arbitration_lost ||
+               info.protocol_error == ebus::ProtocolError::invalid_message) {
+      command.setWriteSessionId(0);
+    }
+    break;
   }
 }
 

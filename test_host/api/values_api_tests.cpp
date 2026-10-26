@@ -84,6 +84,8 @@ TEST_CASE("ValuesApi reads and writes by key", "[values_api]") {
   REQUIRE(write_req.final_body.find(R"("id":"write")") != std::string::npos);
   REQUIRE(write_req.final_body.find(R"("status":"successful")") !=
           std::string::npos);
+  REQUIRE(command_manager.findCommand("01")->getWriteSessionId() != 0);
+  REQUIRE(command_manager.findCommand("01")->getPendingReadId() == 0);
 
   httpd_req_t list_req{};
   REQUIRE(ValuesApi::handleValues(&list_req) == ESP_OK);
@@ -285,8 +287,15 @@ TEST_CASE("Delayed writes send only the last value after the last deadline", "[v
   REQUIRE(fixture.queued() == 0);
   command_manager.processDelayedWritesAt(4500);
   REQUIRE(command_manager.delayed_writes_.empty());
-  REQUIRE(fixture.queued() == 2);  // One write, followed by one read.
-  REQUIRE(command_manager.findCommand("01")->getPendingReadId() != 0);
+  REQUIRE(fixture.queued() == 1);  // Dispatch queues only the write.
+  auto* command = command_manager.findCommand("01");
+  REQUIRE(command->getPendingReadId() == 0);
+  ebus::ProtocolInfo result{};
+  result.session_id = command->getWriteSessionId();
+  REQUIRE(result.session_id != 0);
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getPendingReadId() != 0);
+  REQUIRE(fixture.queued() == 2);  // Success queues one readback.
   command_manager.processDelayedWritesAt(9000);
   REQUIRE(fixture.queued() == 2);
 }
@@ -299,7 +308,8 @@ TEST_CASE("A repeated value also restarts the write delay", "[values_api]") {
   command_manager.processDelayedWritesAt(2000);
   REQUIRE(fixture.queued() == 0);
   command_manager.processDelayedWritesAt(3999);
-  REQUIRE(fixture.queued() == 2);
+  REQUIRE(fixture.queued() == 1);
+  REQUIRE(command_manager.findCommand("01")->getPendingReadId() == 0);
 }
 
 TEST_CASE("Immediate writes supersede waiting writes only when enqueue succeeds", "[values_api]") {
@@ -333,7 +343,7 @@ TEST_CASE("Pending writes are cancelled when their command changes or disappears
   }
   SECTION("Command removed") { command_manager.removeCommand("01"); }
   SECTION("All commands removed") { command_manager.removeAll(); }
-  SECTION("Application stopping") { command_manager.clearDelayedWrites(); }
+  SECTION("Application stopping") { command_manager.cancelWrites(); }
   command_manager.processDelayedWritesAt(2000);
   REQUIRE(command_manager.delayed_writes_.empty());
   REQUIRE(fixture.queued() == 0);
@@ -350,10 +360,20 @@ TEST_CASE("Different keys have independent delayed write deadlines", "[values_ap
   REQUIRE(command_manager.queueWriteAt("02", message, 2000, 2000));
   command_manager.processDelayedWritesAt(3000);
   REQUIRE(command_manager.delayed_writes_.size() == 1);
-  REQUIRE(command_manager.findCommand("01")->getPendingReadId() != 0);
+  REQUIRE(command_manager.findCommand("01")->getWriteSessionId() != 0);
+  REQUIRE(command_manager.findCommand("01")->getPendingReadId() == 0);
   REQUIRE(command_manager.findCommand("02")->getPendingReadId() == 0);
   command_manager.processDelayedWritesAt(4000);
   REQUIRE(command_manager.delayed_writes_.empty());
+  REQUIRE(fixture.queued() == 2);
+  ebus::ProtocolInfo result{};
+  result.session_id = command_manager.findCommand("01")->getWriteSessionId();
+  command_manager.handleWriteResult(result);
+  REQUIRE(command_manager.findCommand("01")->getPendingReadId() != 0);
+  REQUIRE(command_manager.findCommand("02")->getPendingReadId() == 0);
+  result.session_id = command_manager.findCommand("02")->getWriteSessionId();
+  command_manager.handleWriteResult(result);
+  REQUIRE(command_manager.findCommand("02")->getPendingReadId() != 0);
   REQUIRE(fixture.queued() == 4);
 }
 
@@ -390,16 +410,18 @@ TEST_CASE("Write INFO logs correlate replacement, enqueue, bus attempts and read
   command_manager.processDelayedWritesAt(due);
   REQUIRE(command_manager.write_traces_.size() > 0);
   const auto session_id = command_manager.write_traces_.back().session_id;
-  const auto read_id = command_manager.findCommand("01")->getPendingReadId();
+  REQUIRE(command_manager.findCommand("01")->getPendingReadId() == 0);
 
   ebus::ProtocolInfo info{};
   info.session_id = session_id;
   info.is_error = true;
   info.protocol_error = ebus::ProtocolError::error_active_master_ack;
-  command_manager.logWriteResult(info);
+  command_manager.handleWriteResult(info);
   info.is_error = false;
-  command_manager.logWriteResult(info);
-  command_manager.logWriteResult(info);  // Duplicate delivery must not duplicate success.
+  command_manager.handleWriteResult(info);
+  command_manager.handleWriteResult(info);  // Duplicate delivery must not duplicate success.
+  const auto read_id = command_manager.findCommand("01")->getPendingReadId();
+  REQUIRE(read_id != 0);
   const uint8_t response[] = {2, 0, 21};
   info.session_id = read_id;
   info.slave_view = ebus::ByteView(response, sizeof(response));
@@ -466,8 +488,8 @@ TEST_CASE("Exhausted arbitration is logged once as a terminal write failure", "[
   info.is_error = true;
   info.protocol_error = ebus::ProtocolError::arbitration_lost;
   info.attempts = 3;
-  command_manager.logWriteResult(info);
-  command_manager.logWriteResult(info);
+  command_manager.handleWriteResult(info);
+  command_manager.handleWriteResult(info);
   size_t failures = 0;
   for (const auto& entry : logger.infoMessages()) {
     if (entry.message.find("event=bus_failed") != std::string::npos) {
@@ -477,4 +499,152 @@ TEST_CASE("Exhausted arbitration is logged once as a terminal write failure", "[
     }
   }
   REQUIRE(failures == 1);
+}
+
+TEST_CASE("Only the current immediate write requests one readback on success", "[values_api]") {
+  DelayedWriteFixture fixture;
+  REQUIRE(command_manager.queueWrite("01", fixture.message(20)));
+  auto* command = command_manager.findCommand("01");
+  const auto old_session = command->getWriteSessionId();
+  REQUIRE(command_manager.queueWrite("01", fixture.message(21)));
+  const auto current_session = command->getWriteSessionId();
+  REQUIRE(current_session != old_session);
+  REQUIRE(fixture.queued() == 1);  // The queued older write was replaced.
+  REQUIRE(command->getPendingReadId() == 0);
+
+  ebus::ProtocolInfo result{};
+  result.session_id = old_session;
+  command_manager.handleWriteResult(result);  // A late completion from an in-flight old write.
+  REQUIRE(command->getWriteSessionId() == current_session);
+  REQUIRE(command->getPendingReadId() == 0);
+  REQUIRE(fixture.queued() == 1);
+
+  result.session_id = current_session;
+  command_manager.handleWriteResult(result);
+  const auto read_session = command->getPendingReadId();
+  REQUIRE(read_session != 0);
+  REQUIRE(command->getWriteSessionId() == 0);
+  REQUIRE(fixture.queued() == 2);
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getPendingReadId() == read_session);
+  REQUIRE(fixture.queued() == 2);
+}
+
+TEST_CASE("An accepted delayed value supersedes an old bus write before its deadline", "[values_api]") {
+  DelayedWriteFixture fixture;
+  REQUIRE(command_manager.queueWrite("01", fixture.message(20)));
+  auto* command = command_manager.findCommand("01");
+  const auto old_session = command->getWriteSessionId();
+  REQUIRE(command_manager.queueWriteAt("01", fixture.message(21.5), 2000, 1000));
+  REQUIRE(command->getWriteSessionId() == 0);
+  REQUIRE(fixture.queued() == 0);
+  ebus::ProtocolInfo result{};
+  result.session_id = old_session;
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getPendingReadId() == 0);
+  command_manager.processDelayedWritesAt(2999);
+  REQUIRE(fixture.queued() == 0);
+  command_manager.processDelayedWritesAt(3000);
+  const auto current_session = command->getWriteSessionId();
+  REQUIRE(current_session != 0);
+  REQUIRE(current_session != old_session);
+  REQUIRE(fixture.queued() == 1);
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getWriteSessionId() == current_session);
+  REQUIRE(command->getPendingReadId() == 0);
+  result.session_id = current_session;
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getPendingReadId() != 0);
+  REQUIRE(fixture.queued() == 2);
+}
+
+TEST_CASE("An attempt error preserves the write until its later successful completion", "[values_api]") {
+  DelayedWriteFixture fixture;
+  REQUIRE(command_manager.queueWrite("01", fixture.message(21)));
+  auto* command = command_manager.findCommand("01");
+  const auto session = command->getWriteSessionId();
+  ebus::ProtocolInfo result{};
+  result.session_id = session;
+  result.is_error = true;
+  result.protocol_error = ebus::ProtocolError::total_transfer_timeout;
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getWriteSessionId() == session);
+  REQUIRE(command->getPendingReadId() == 0);
+  REQUIRE(fixture.queued() == 1);
+  result.is_error = false;
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getWriteSessionId() == 0);
+  REQUIRE(command->getPendingReadId() != 0);
+  REQUIRE(fixture.queued() == 2);
+}
+
+TEST_CASE("Readback does not depend on retained diagnostic history", "[values_api]") {
+  DelayedWriteFixture fixture;
+  REQUIRE(command_manager.queueWrite("01", fixture.message(21)));
+  auto* command = command_manager.findCommand("01");
+  ebus::ProtocolInfo result{};
+  result.session_id = command->getWriteSessionId();
+  command_manager.write_traces_.clear();  // Model eviction of the diagnostic entry.
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getWriteSessionId() == 0);
+  REQUIRE(command->getPendingReadId() != 0);
+  REQUIRE(fixture.queued() == 2);
+}
+
+TEST_CASE("Removing or redefining a command suppresses readback of its old write", "[values_api]") {
+  DelayedWriteFixture fixture;
+  REQUIRE(command_manager.queueWrite("01", fixture.message(21)));
+  ebus::ProtocolInfo result{};
+  result.session_id = command_manager.findCommand("01")->getWriteSessionId();
+  SECTION("Command removed") { command_manager.removeCommand("01"); }
+  SECTION("Command redefined") {
+    const auto json = makeCommandJson();
+    ebus::detail::JsonReader reader(json);
+    command_manager.insertCommand(Command::fromJson(reader));
+  }
+  SECTION("All commands removed") { command_manager.removeAll(); }
+  SECTION("Application stopped") { command_manager.cancelWrites(); }
+  command_manager.handleWriteResult(result);
+  REQUIRE(fixture.queued() == 0);
+  if (const auto* command = command_manager.findCommand("01")) {
+    REQUIRE(command->getWriteSessionId() == 0);
+    REQUIRE(command->getPendingReadId() == 0);
+  }
+}
+
+TEST_CASE("A rejected newer write preserves completion handling of its predecessor", "[values_api]") {
+  DelayedWriteFixture fixture;
+  REQUIRE(command_manager.queueWrite("01", fixture.message(20)));
+  auto* command = command_manager.findCommand("01");
+  const auto old_session = command->getWriteSessionId();
+  // Model completion in the library before its callback reaches the manager.
+  REQUIRE(getEbusController().cancel(old_session));
+  uint32_t last_filler = 0;
+  while (const auto session = getEbusController().enqueue(app::priority::send, fixture.message(19))) {
+    last_filler = session;
+  }
+  REQUIRE(last_filler != 0);
+  REQUIRE_FALSE(command_manager.queueWrite("01", fixture.message(21)));
+  REQUIRE(command->getWriteSessionId() == old_session);
+  REQUIRE(command->getPendingReadId() == 0);
+  REQUIRE(getEbusController().cancel(last_filler));
+  ebus::ProtocolInfo result{};
+  result.session_id = old_session;
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getWriteSessionId() == 0);
+  REQUIRE(command->getPendingReadId() != 0);
+}
+
+TEST_CASE("Terminal write failures never request readback", "[values_api]") {
+  DelayedWriteFixture fixture;
+  REQUIRE(command_manager.queueWrite("01", fixture.message(21)));
+  auto* command = command_manager.findCommand("01");
+  ebus::ProtocolInfo result{};
+  result.session_id = command->getWriteSessionId();
+  result.is_error = true;
+  SECTION("Arbitration exhausted") { result.protocol_error = ebus::ProtocolError::arbitration_lost; }
+  SECTION("Invalid message") { result.protocol_error = ebus::ProtocolError::invalid_message; }
+  command_manager.handleWriteResult(result);
+  REQUIRE(command->getWriteSessionId() == 0);
+  REQUIRE(command->getPendingReadId() == 0);
 }

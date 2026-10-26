@@ -120,7 +120,6 @@ esp_err_t ValuesApi::handleValuesWrite(httpd_req_t* req) {
       return ESP_OK;
     }
     if (delay_ms == 0) {
-      requestCommandRead(*command);
       HttpUtils::sendSuccessResponse(req, "write");
     } else {
       HttpUtils::sendResponse(req, "202 Accepted", "application/json;charset=utf-8",
