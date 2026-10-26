@@ -29,6 +29,8 @@ telegram is logged in hex so its actual bytes can be inspected.
   write, command replacement/removal, or application shutdown.
 - `bus_error`: an attempt produced an error. Retries remain library-managed;
   this line alone does not establish terminal failure.
+- `bus_failed`: all configured arbitration attempts were exhausted; this is
+  a terminal failure for that session.
 - `bus_success`: the library reported a completed telegram. This does not
   establish that the target device stored the requested setting.
 - `read_requested` / `read_queue_rejected`: a readback was requested or its

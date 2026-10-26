@@ -645,16 +645,22 @@ void CommandManager::logWriteResult(const ebus::ProtocolInfo& info) {
   if (info.session_id == 0) return;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   for (auto& trace : write_traces_) {
-    if (trace.session_id != info.session_id || trace.success_logged) continue;
+    if (trace.session_id != info.session_id || trace.terminal_logged) continue;
     const auto key = StringPool::instance().lookup(trace.key_id);
-    if (info.is_error) {
+    if (info.is_error && info.protocol_error == ebus::ProtocolError::arbitration_lost) {
+      trace.terminal_logged = true;
+      char detail[128];
+      snprintf(detail, sizeof(detail), "reason=arbitration_attempts_exhausted attempts=%u",
+               info.attempts);
+      writeLog(trace.request_id, key, "bus_failed", detail, info.session_id);
+    } else if (info.is_error) {
       // Library callbacks include attempt errors, not just terminal failures.
       char detail[192];
       snprintf(detail, sizeof(detail), "error=%s attempts=%u retries=library_managed",
                ebus::toString(info.protocol_error), info.attempts);
       writeLog(trace.request_id, key, "bus_error", detail, info.session_id);
     } else {
-      trace.success_logged = true;
+      trace.terminal_logged = true;
       writeLog(trace.request_id, key, "bus_success",
                "device_value_not_yet_confirmed", info.session_id);
     }
