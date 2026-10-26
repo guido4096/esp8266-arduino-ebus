@@ -9,6 +9,7 @@
 #include "app/ebus_test_helpers.hpp"
 #undef private
 #undef protected
+#include "system/logger.hpp"
 
 namespace {
 
@@ -370,4 +371,87 @@ TEST_CASE("A full delayed write queue rejects new keys but accepts replacements"
   }
   REQUIRE(command_manager.queueWriteAt("delay_0", message, 3000, 1000));
   REQUIRE(command_manager.delayed_writes_[0].due_ms == 4000);
+}
+
+TEST_CASE("Write INFO logs correlate replacement, enqueue, bus attempts and readback", "[values_api]") {
+  DelayedWriteFixture fixture;
+  logger.clearInfoMessages();
+  ValuesApi api(command_manager);
+  for (double value : {20.0, 21.0}) {
+    httpd_req_t req{};
+    req.body = std::string(R"({"key":"01","value":)") +
+               std::to_string(value) + R"(,"delay_ms":2000})";
+    req.content_len = static_cast<int>(req.body.size());
+    REQUIRE(ValuesApi::handleValuesWrite(&req) == ESP_OK);
+    REQUIRE(req.status == "202 Accepted");
+  }
+  const auto request_id = command_manager.delayed_writes_[0].request_id;
+  const auto due = command_manager.delayed_writes_[0].due_ms;
+  command_manager.processDelayedWritesAt(due);
+  REQUIRE(command_manager.write_traces_.size() > 0);
+  const auto session_id = command_manager.write_traces_.back().session_id;
+  const auto read_id = command_manager.findCommand("01")->getPendingReadId();
+
+  ebus::ProtocolInfo info{};
+  info.session_id = session_id;
+  info.is_error = true;
+  info.protocol_error = ebus::ProtocolError::error_active_master_ack;
+  command_manager.logWriteResult(info);
+  info.is_error = false;
+  command_manager.logWriteResult(info);
+  command_manager.logWriteResult(info);  // Duplicate delivery must not duplicate success.
+  const uint8_t response[] = {2, 0, 21};
+  info.session_id = read_id;
+  info.slave_view = ebus::ByteView(response, sizeof(response));
+  command_manager.updateData(info);
+
+  auto count = [](std::string_view fragment) {
+    size_t matches = 0;
+    for (const auto& entry : logger.infoMessages()) {
+      if (entry.message.find(fragment) != std::string::npos) ++matches;
+    }
+    return matches;
+  };
+  REQUIRE(count("event=received value=20") == 1);
+  REQUIRE(count("event=received value=21") == 1);
+  REQUIRE(count("event=replaced previous_req=") == 1);
+  const auto prefix = "[WRITE] req=" + std::to_string(request_id) + " key=01 event=";
+  REQUIRE(count(prefix + "bus_queued") == 1);
+  REQUIRE(count(prefix + "bus_error") == 1);
+  REQUIRE(count(prefix + "bus_success") == 1);
+  REQUIRE(count("device_value_not_yet_confirmed") == 1);
+  REQUIRE(count("event=readback value=21") == 1);
+  bool linked_read = false;
+  for (const auto& entry : logger.infoMessages()) {
+    if (entry.message.find("event=readback") != std::string::npos) {
+      linked_read = entry.session_id == read_id;
+    }
+  }
+  REQUIRE(linked_read);
+}
+
+TEST_CASE("Rejected delayed dispatch and cancellation remain visible at INFO level", "[values_api]") {
+  DelayedWriteFixture fixture;
+  logger.clearInfoMessages();
+  const auto message = fixture.message(21);
+  REQUIRE(command_manager.queueWriteAt("01", message, 2000, 0));
+  const auto request_id = command_manager.delayed_writes_[0].request_id;
+  SECTION("Bus queue rejection") {
+    while (getEbusController().enqueue(app::priority::send, message) != 0) {}
+    command_manager.processDelayedWritesAt(2000);
+    bool found = false;
+    for (const auto& entry : logger.infoMessages()) {
+      if (entry.message.find("req=" + std::to_string(request_id) +
+          " key=01 event=rejected reason=bus_queue_unavailable") != std::string::npos) found = true;
+    }
+    REQUIRE(found);
+  }
+  SECTION("Command removed") {
+    command_manager.removeCommand("01");
+    bool found = false;
+    for (const auto& entry : logger.infoMessages()) {
+      if (entry.message.find("event=cancelled") != std::string::npos) found = true;
+    }
+    REQUIRE(found);
+  }
 }

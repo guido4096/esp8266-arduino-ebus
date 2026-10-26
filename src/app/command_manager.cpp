@@ -26,6 +26,18 @@
 CommandManager command_manager;
 
 namespace {
+// Called only on application/monitor tasks, never from the bus callback.
+void writeLog(uint32_t request_id, std::string_view key, const char* event,
+              std::string_view detail = {}, uint32_t session_id = 0) {
+  char message[384];
+  snprintf(message, sizeof(message), "[WRITE] req=%lu key=%.*s event=%s %.*s",
+           static_cast<unsigned long>(request_id),
+           static_cast<int>(std::min<size_t>(key.size(), 64)), key.data(), event,
+           static_cast<int>(std::min<size_t>(detail.size(), 240)),
+           detail.empty() ? "" : detail.data());
+  logger.info(message, false, session_id);
+}
+
 constexpr const char* littlefs_base_path = "/littlefs";
 constexpr const char* littlefs_partition_label = "littlefs";
 #ifndef EBUS_COMMANDS_FILE_PATH
@@ -142,6 +154,10 @@ void CommandManager::removeAll() {
     if (command_removed_callback_) command_removed_callback_(&commands_[i]);
   }
   commands_.clear();
+  for (const auto& pending : delayed_writes_) {
+    writeLog(pending.request_id, StringPool::instance().lookup(pending.key_id),
+             "cancelled", "reason=commands_cleared");
+  }
   delayed_writes_.clear();
   clearFieldOverrides();
 }
@@ -294,6 +310,10 @@ int64_t CommandManager::saveCommands() const {
 int64_t CommandManager::wipeCommands() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   commands_.clear();
+  for (const auto& pending : delayed_writes_) {
+    writeLog(pending.request_id, StringPool::instance().lookup(pending.key_id),
+             "cancelled", "reason=commands_cleared");
+  }
   delayed_writes_.clear();
   clearFieldOverrides();
   if (!ensureLittlefsMounted()) return -1;
@@ -466,6 +486,16 @@ void CommandManager::updateData(const ebus::ProtocolInfo& info) {
       cmd->setData(ebus::range(info.slave_view, 1, data_len));
     }
 
+    if (cmd->hasWriteCmd()) {
+      std::string value;
+      ebus::detail::JsonWriter writer([&value](std::string_view part) {
+        value.append(part);
+      });
+      cmd->getValueJson(writer);
+      writer.flush();
+      writeLog(0, cmd->getKey(), "readback", "value=" + value, info.session_id);
+    }
+
     if (data_updated_callback_) {
       data_updated_callback_(cmd->getKey());
     }
@@ -487,27 +517,49 @@ void CommandManager::updateData(const ebus::ProtocolInfo& info) {
 // Hold the manager lock through enqueue/cancellation so an immediate write
 // cannot race an expired delayed write for the same key.
 bool CommandManager::queueWrite(std::string_view key, ebus::ByteView message,
-                                uint32_t delay_ms) {
+                                uint32_t delay_ms, std::string_view value) {
   return queueWriteAt(key, message, delay_ms,
-                      static_cast<uint64_t>(esp_timer_get_time() / 1000ULL));
+                      static_cast<uint64_t>(esp_timer_get_time() / 1000ULL), value);
 }
 
 bool CommandManager::queueWriteAt(std::string_view key, ebus::ByteView message,
-                                  uint32_t delay_ms, uint64_t now_ms) {
+                                  uint32_t delay_ms, uint64_t now_ms,
+                                  std::string_view value) {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   Command* command = findCommand(key);
   if (!command || !command->hasWriteCmd() || message.empty() ||
       delay_ms > max_write_delay_ms) return false;
 
+  if (++next_write_request_id_ == 0) ++next_write_request_id_;
+  const uint32_t request_id = next_write_request_id_;
+  char detail[240];
+  if (!value.empty()) {
+    snprintf(detail, sizeof(detail), "value=%.*s delay_ms=%lu",
+             static_cast<int>(std::min<size_t>(value.size(), 128)), value.data(),
+             static_cast<unsigned long>(delay_ms));
+  } else {
+    snprintf(detail, sizeof(detail), "delay_ms=%lu telegram=%s",
+             static_cast<unsigned long>(delay_ms), ebus::toString(message).c_str());
+  }
+  writeLog(request_id, key, "received", detail);
+
   if (delay_ms == 0) {
-    if (getEbusController().enqueue(app::priority::send, message) == 0) {
+    const auto session_id = getEbusController().enqueue(app::priority::send, message);
+    if (session_id == 0) {
+      writeLog(request_id, key, "rejected", "reason=bus_queue_unavailable");
       return false;
     }
-    cancelDelayedWrite(command->getKeyId());
+    cancelDelayedWrite(command->getKeyId(), "superseded_by_immediate_write");
+    trackWrite(request_id, command->getKeyId(), session_id, message);
     return true;
   } else {
     for (auto& pending : delayed_writes_) {
       if (pending.key_id == command->getKeyId()) {
+        snprintf(detail, sizeof(detail), "previous_req=%lu delay_ms=%lu",
+                 static_cast<unsigned long>(pending.request_id),
+                 static_cast<unsigned long>(delay_ms));
+        writeLog(request_id, key, "replaced", detail);
+        pending.request_id = request_id;
         pending.message.assign(message);
         pending.due_ms = now_ms + delay_ms;
         return true;
@@ -515,15 +567,23 @@ bool CommandManager::queueWriteAt(std::string_view key, ebus::ByteView message,
     }
     DelayedWrite pending;
     pending.key_id = command->getKeyId();
+    pending.request_id = request_id;
     pending.due_ms = now_ms + delay_ms;
     pending.message.assign(message);
-    return delayed_writes_.push_back(std::move(pending));
+    if (!delayed_writes_.push_back(std::move(pending))) {
+      writeLog(request_id, key, "rejected", "reason=delayed_queue_full");
+      return false;
+    }
+    writeLog(request_id, key, "waiting");
+    return true;
   }
 }
 
-void CommandManager::cancelDelayedWrite(uint8_t key_id) {
+void CommandManager::cancelDelayedWrite(uint8_t key_id, const char* reason) {
   for (auto it = delayed_writes_.begin(); it != delayed_writes_.end(); ++it) {
     if (it->key_id == key_id) {
+      writeLog(it->request_id, StringPool::instance().lookup(key_id),
+               "cancelled", reason);
       delayed_writes_.erase(it);
       return;
     }
@@ -532,6 +592,10 @@ void CommandManager::cancelDelayedWrite(uint8_t key_id) {
 
 void CommandManager::clearDelayedWrites() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  for (const auto& pending : delayed_writes_) {
+    writeLog(pending.request_id, StringPool::instance().lookup(pending.key_id),
+             "cancelled", "reason=pending_writes_cleared");
+  }
   delayed_writes_.clear();
 }
 
@@ -550,15 +614,51 @@ void CommandManager::processDelayedWritesAt(uint64_t now_ms) {
     const auto key = StringPool::instance().lookup(it->key_id);
     Command* command = findCommand(key);
     if (command) {
-      if (getEbusController().enqueue(app::priority::send, it->message) != 0) {
+      const auto session_id =
+          getEbusController().enqueue(app::priority::send, it->message);
+      if (session_id != 0) {
+        trackWrite(it->request_id, it->key_id, session_id, it->message);
         requestCommandRead(*command);
       } else {
+        writeLog(it->request_id, key, "rejected", "reason=bus_queue_unavailable");
         logger.warn("Delayed write could not be queued for key: " +
                     std::string(key));
       }
     }
     // No extra retries: bus retries remain the library's responsibility.
     it = delayed_writes_.erase(it);
+  }
+}
+
+void CommandManager::trackWrite(uint32_t request_id, uint8_t key_id,
+                                 uint32_t session_id, ebus::ByteView message) {
+  // Bounded diagnostic history only; eviction never changes bus scheduling.
+  if (write_traces_.size() == write_traces_.capacity()) {
+    write_traces_.erase(write_traces_.begin());
+  }
+  write_traces_.push_back({request_id, session_id, key_id, false});
+  writeLog(request_id, StringPool::instance().lookup(key_id), "bus_queued",
+           "telegram=" + ebus::toString(message), session_id);
+}
+
+void CommandManager::logWriteResult(const ebus::ProtocolInfo& info) {
+  if (info.session_id == 0) return;
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  for (auto& trace : write_traces_) {
+    if (trace.session_id != info.session_id || trace.success_logged) continue;
+    const auto key = StringPool::instance().lookup(trace.key_id);
+    if (info.is_error) {
+      // Library callbacks include attempt errors, not just terminal failures.
+      char detail[192];
+      snprintf(detail, sizeof(detail), "error=%s attempts=%u retries=library_managed",
+               ebus::toString(info.protocol_error), info.attempts);
+      writeLog(trace.request_id, key, "bus_error", detail, info.session_id);
+    } else {
+      trace.success_logged = true;
+      writeLog(trace.request_id, key, "bus_success",
+               "device_value_not_yet_confirmed", info.session_id);
+    }
+    return;
   }
 }
 

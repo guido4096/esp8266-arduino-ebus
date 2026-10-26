@@ -107,7 +107,14 @@ esp_err_t ValuesApi::handleValuesWrite(httpd_req_t* req) {
                                    "Invalid write command format");
       return ESP_OK;
     }
-    if (!instance_->command_manager_.queueWrite(key, full_write, delay_ms)) {
+    std::string_view requested_value;
+    ebus::detail::JsonReader value_reader(body_sv);
+    if (value_reader.next() == ebus::detail::JsonReader::Token::object_start &&
+        value_reader.findKey("value")) {
+      requested_value = value_reader.rawValue();
+    }
+    if (!instance_->command_manager_.queueWrite(key, full_write, delay_ms,
+                                               requested_value)) {
       HttpUtils::sendErrorResponse(req, "503 Service Unavailable", "write",
                                    "Unable to queue write command");
       return ESP_OK;

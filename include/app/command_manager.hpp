@@ -70,9 +70,10 @@ class CommandManager {
 
   static constexpr uint32_t max_write_delay_ms = 60000;
   bool queueWrite(std::string_view key, ebus::ByteView message,
-                  uint32_t delay_ms = 0);
+                  uint32_t delay_ms = 0, std::string_view value = {});
   void processDelayedWrites();
   void clearDelayedWrites();
+  void logWriteResult(const ebus::ProtocolInfo& info);
 
   // Write command storage (separate from Command to save memory)
   ebus::ByteView getWriteCmd(size_t idx) const;
@@ -108,14 +109,28 @@ class CommandManager {
 
   struct DelayedWrite {
     uint8_t key_id = 0;
+    uint32_t request_id = 0;
     uint64_t due_ms = 0;
     ebus::Sequence message;
   };
 
   bool queueWriteAt(std::string_view key, ebus::ByteView message,
-                    uint32_t delay_ms, uint64_t now_ms);
+                    uint32_t delay_ms, uint64_t now_ms,
+                    std::string_view value = {});
   void processDelayedWritesAt(uint64_t now_ms);
-  void cancelDelayedWrite(uint8_t key_id);
+  void cancelDelayedWrite(uint8_t key_id,
+                          const char* reason = "command_changed_or_removed");
+  void trackWrite(uint32_t request_id, uint8_t key_id, uint32_t session_id,
+                  ebus::ByteView message);
+
+  struct WriteTrace {
+    uint32_t request_id = 0;
+    uint32_t session_id = 0;
+    uint8_t key_id = 0;
+    bool success_logged = false;
+  };
+  uint32_t next_write_request_id_ = 0;
+  ebus::StaticVector<WriteTrace, write_cmd_capacity_ * 2> write_traces_;
 
   mutable std::recursive_mutex mutex_;
   ebus::StaticVector<DelayedWrite, write_cmd_capacity_> delayed_writes_;
