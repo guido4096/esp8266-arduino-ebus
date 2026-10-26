@@ -20,6 +20,7 @@
 #endif
 
 #include "app/mqtt.hpp"
+#include "app/command_read.hpp"
 #include "system/logger.hpp"
 
 CommandManager command_manager;
@@ -108,6 +109,7 @@ void CommandManager::insertCommand(Command command) {
   for (size_t i = 0; i < commands_.size(); i++) {
     if (std::string_view(commands_[i].getKey()) ==
         std::string_view(command.getKey())) {
+      cancelDelayedWrite(commands_[i].getKeyId());
       uint16_t old_poll_id = commands_[i].getPollId();
       commands_[i] = std::move(command);
       commands_[i].setPollId(old_poll_id);
@@ -125,6 +127,7 @@ void CommandManager::removeCommand(std::string_view key) {
   for (size_t i = 0; i < commands_.size(); i++) {
     if (std::string_view(commands_[i].getKey()) == key) {
       uint8_t removed_key_id = commands_[i].getKeyId();
+      cancelDelayedWrite(removed_key_id);
       if (command_removed_callback_) command_removed_callback_(&commands_[i]);
       commands_.erase(commands_.begin() + i);
       removeFieldOverrides(removed_key_id);
@@ -139,6 +142,7 @@ void CommandManager::removeAll() {
     if (command_removed_callback_) command_removed_callback_(&commands_[i]);
   }
   commands_.clear();
+  delayed_writes_.clear();
   clearFieldOverrides();
 }
 
@@ -290,6 +294,7 @@ int64_t CommandManager::saveCommands() const {
 int64_t CommandManager::wipeCommands() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   commands_.clear();
+  delayed_writes_.clear();
   clearFieldOverrides();
   if (!ensureLittlefsMounted()) return -1;
 
@@ -477,6 +482,84 @@ void CommandManager::updateData(const ebus::ProtocolInfo& info) {
 
   MatchingCommands matching_commands = findPassiveCommands(info.master_view);
   for (Command* cmd : matching_commands) update(cmd, info);
+}
+
+// Hold the manager lock through enqueue/cancellation so an immediate write
+// cannot race an expired delayed write for the same key.
+bool CommandManager::queueWrite(std::string_view key, ebus::ByteView message,
+                                uint32_t delay_ms) {
+  return queueWriteAt(key, message, delay_ms,
+                      static_cast<uint64_t>(esp_timer_get_time() / 1000ULL));
+}
+
+bool CommandManager::queueWriteAt(std::string_view key, ebus::ByteView message,
+                                  uint32_t delay_ms, uint64_t now_ms) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  Command* command = findCommand(key);
+  if (!command || !command->hasWriteCmd() || message.empty() ||
+      delay_ms > max_write_delay_ms) return false;
+
+  if (delay_ms == 0) {
+    if (getEbusController().enqueue(app::priority::send, message) == 0) {
+      return false;
+    }
+    cancelDelayedWrite(command->getKeyId());
+    return true;
+  } else {
+    for (auto& pending : delayed_writes_) {
+      if (pending.key_id == command->getKeyId()) {
+        pending.message.assign(message);
+        pending.due_ms = now_ms + delay_ms;
+        return true;
+      }
+    }
+    DelayedWrite pending;
+    pending.key_id = command->getKeyId();
+    pending.due_ms = now_ms + delay_ms;
+    pending.message.assign(message);
+    return delayed_writes_.push_back(std::move(pending));
+  }
+}
+
+void CommandManager::cancelDelayedWrite(uint8_t key_id) {
+  for (auto it = delayed_writes_.begin(); it != delayed_writes_.end(); ++it) {
+    if (it->key_id == key_id) {
+      delayed_writes_.erase(it);
+      return;
+    }
+  }
+}
+
+void CommandManager::clearDelayedWrites() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  delayed_writes_.clear();
+}
+
+void CommandManager::processDelayedWrites() {
+  processDelayedWritesAt(
+      static_cast<uint64_t>(esp_timer_get_time() / 1000ULL));
+}
+
+void CommandManager::processDelayedWritesAt(uint64_t now_ms) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  for (auto it = delayed_writes_.begin(); it != delayed_writes_.end();) {
+    if (now_ms < it->due_ms) {
+      ++it;
+      continue;
+    }
+    const auto key = StringPool::instance().lookup(it->key_id);
+    Command* command = findCommand(key);
+    if (command) {
+      if (getEbusController().enqueue(app::priority::send, it->message) != 0) {
+        requestCommandRead(*command);
+      } else {
+        logger.warn("Delayed write could not be queued for key: " +
+                    std::string(key));
+      }
+    }
+    // No extra retries: bus retries remain the library's responsibility.
+    it = delayed_writes_.erase(it);
+  }
 }
 
 void CommandManager::fetchValues(const ebus::JsonChunkVisitor& visitor) const {

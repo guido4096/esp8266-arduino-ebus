@@ -68,6 +68,12 @@ class CommandManager {
 
   void fetchValues(const ebus::JsonChunkVisitor& visitor) const;
 
+  static constexpr uint32_t max_write_delay_ms = 60000;
+  bool queueWrite(std::string_view key, ebus::ByteView message,
+                  uint32_t delay_ms = 0);
+  void processDelayedWrites();
+  void clearDelayedWrites();
+
   // Write command storage (separate from Command to save memory)
   ebus::ByteView getWriteCmd(size_t idx) const;
   bool addWriteCmd(PollSequence&& cmd);
@@ -100,7 +106,19 @@ class CommandManager {
   static constexpr size_t override_field_capacity_ = OVERRIDE_FIELD_CAPACITY;
 #endif
 
+  struct DelayedWrite {
+    uint8_t key_id = 0;
+    uint64_t due_ms = 0;
+    ebus::Sequence message;
+  };
+
+  bool queueWriteAt(std::string_view key, ebus::ByteView message,
+                    uint32_t delay_ms, uint64_t now_ms);
+  void processDelayedWritesAt(uint64_t now_ms);
+  void cancelDelayedWrite(uint8_t key_id);
+
   mutable std::recursive_mutex mutex_;
+  ebus::StaticVector<DelayedWrite, write_cmd_capacity_> delayed_writes_;
 
   ebus::StaticVector<Command, command_capacity_> commands_;
   ebus::StaticVector<PollSequence, write_cmd_capacity_> write_cmds_;

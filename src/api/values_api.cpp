@@ -2,8 +2,10 @@
 
 #if defined(EBUS_INTERNAL)
 
+#include <algorithm>
 #include <cstdio>
 #include <ebus/detail/json_reader.hpp>
+#include <ebus/utils.hpp>
 
 #include "app/command_manager.hpp"
 #include "app/command_read.hpp"
@@ -71,6 +73,24 @@ esp_err_t ValuesApi::handleValuesWrite(httpd_req_t* req) {
     key = std::string(reader.value());
   }
 
+  uint32_t delay_ms = 0;
+  ebus::detail::JsonReader options(body_sv);
+  if (options.next() == ebus::detail::JsonReader::Token::object_start &&
+      options.findKey("delay_ms")) {
+    const auto token = options.next();
+    const auto value = options.value();
+    const auto parsed = ebus::toNumStrict<uint32_t>(value);
+    if (token != ebus::detail::JsonReader::Token::number || value.empty() ||
+        !std::all_of(value.begin(), value.end(),
+                     [](char c) { return c >= '0' && c <= '9'; }) ||
+        !parsed || *parsed > CommandManager::max_write_delay_ms) {
+      HttpUtils::sendErrorResponse(req, "400 Bad Request", "write",
+                                   "delay_ms must be an integer from 0 to 60000");
+      return ESP_OK;
+    }
+    delay_ms = *parsed;
+  }
+
   Command* command = instance_->command_manager_.findCommand(key);
   if (command == nullptr) {
     HttpUtils::sendErrorResponse(req, "404 Not Found", "write",
@@ -87,13 +107,18 @@ esp_err_t ValuesApi::handleValuesWrite(httpd_req_t* req) {
                                    "Invalid write command format");
       return ESP_OK;
     }
-    if (getEbusController().enqueue(app::priority::send, full_write) == 0) {
+    if (!instance_->command_manager_.queueWrite(key, full_write, delay_ms)) {
       HttpUtils::sendErrorResponse(req, "503 Service Unavailable", "write",
                                    "Unable to queue write command");
       return ESP_OK;
     }
-    requestCommandRead(*command);
-    HttpUtils::sendSuccessResponse(req, "write");
+    if (delay_ms == 0) {
+      requestCommandRead(*command);
+      HttpUtils::sendSuccessResponse(req, "write");
+    } else {
+      HttpUtils::sendResponse(req, "202 Accepted", "application/json;charset=utf-8",
+          R"({"id":"write","status":"scheduled"})");
+    }
   } else {
     HttpUtils::sendErrorResponse(req, "400 Bad Request", "write",
                                  "Invalid value for key '" + key + "'");

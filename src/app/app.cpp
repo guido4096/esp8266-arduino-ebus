@@ -465,7 +465,10 @@ void App::loop() {
   // the end of app_main deletes the main task and frees its stack out from
   // under all still-running service tasks (use-after-free, heap poison).
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
+#if defined(EBUS_INTERNAL)
+    command_manager.processDelayedWrites();
+#endif
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
@@ -477,6 +480,7 @@ void App::stop() {
   mqtt_.stopTask();
 
   // Now safe to stop other components
+  command_manager.clearDelayedWrites();
   cron.stop();
   stopEbus();
   monitor_.stop();

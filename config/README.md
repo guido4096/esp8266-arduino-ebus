@@ -73,6 +73,11 @@ Commands are defined as a JSON array of objects. Each command object specifies a
 - **`max`** *(float, optional)*: Override the profile's default max value for write validation (e.g. `20` for a setpoint with profile `data1c_celsius` default max=75).
 
 ## Files
+
+For optional HTTP request debouncing (`delay_ms`), see
+[HTTP write delay](../doc/http-write-delay.md). This is a request option,
+not a saved command property.
+
 - `simulation.json`: Command definitions used when building in simulation mode (`esp32-c3-internal-simulation`).
 
 ## Weishaupt WTC example

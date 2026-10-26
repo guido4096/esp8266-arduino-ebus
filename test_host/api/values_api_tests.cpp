@@ -198,3 +198,176 @@ TEST_CASE("ValuesApi rejects writes when the bus queue is full", "[values_api]")
   REQUIRE(command->getLast() == 123);
   command_manager.wipeCommands();
 }
+
+namespace {
+struct DelayedWriteFixture {
+  DelayedWriteFixture() {
+    command_manager.wipeCommands();
+    auto config = getEbusConfig();
+    config.bus.device = "/dev/null";
+    REQUIRE(getEbusController().configure(config));
+    const std::string json = makeCommandJson();
+    ebus::detail::JsonReader reader(json);
+    command_manager.insertCommand(Command::fromJson(reader));
+  }
+  ~DelayedWriteFixture() {
+    command_manager.wipeCommands();
+    auto config = getEbusConfig();
+    config.bus.device = "/dev/null";
+    getEbusController().configure(config);
+  }
+  size_t queued() const {
+    size_t size = 0;
+    getEbusController().fetchStatus([&](const ebus::SystemResources& status) {
+      for (const auto& queue : status.queues) {
+        if (std::string_view(queue.name.c_str()) == "scheduler") size = queue.size;
+      }
+    });
+    return size;
+  }
+  ebus::Sequence message(double value) const {
+    auto* command = command_manager.findCommand("01");
+    return command->buildWriteSequence(command_manager,
+                                       command->getVectorFromDouble(value));
+  }
+};
+}  // namespace
+
+TEST_CASE("HTTP delayed writes are accepted without premature bus traffic", "[values_api]") {
+  DelayedWriteFixture fixture;
+  ValuesApi api(command_manager);
+  httpd_req_t req{};
+  req.body = R"({"key":"01","value":21.5,"delay_ms":2000})";
+  req.content_len = static_cast<int>(req.body.size());
+  REQUIRE(ValuesApi::handleValuesWrite(&req) == ESP_OK);
+  REQUIRE(req.status == "202 Accepted");
+  REQUIRE(req.final_body == R"({"id":"write","status":"scheduled"})");
+  REQUIRE(fixture.queued() == 0);
+  REQUIRE(command_manager.findCommand("01")->getPendingReadId() == 0);
+  REQUIRE(command_manager.delayed_writes_.size() == 1);
+}
+
+TEST_CASE("HTTP write delay requires bounded integer milliseconds", "[values_api]") {
+  DelayedWriteFixture fixture;
+  ValuesApi api(command_manager);
+  for (const auto* value : {"-1", "1.5", "1e3", "true", "null", "\"2000\"",
+                            "60001", "4294967296", "{}", "[]"}) {
+    httpd_req_t req{};
+    req.body = std::string(R"({"key":"01","value":21,"delay_ms":)") + value + "}";
+    req.content_len = static_cast<int>(req.body.size());
+    REQUIRE(ValuesApi::handleValuesWrite(&req) == ESP_OK);
+    REQUIRE(req.status == "400 Bad Request");
+    REQUIRE(command_manager.delayed_writes_.empty());
+    REQUIRE(fixture.queued() == 0);
+  }
+  for (unsigned delay : {0u, 60000u}) {
+    httpd_req_t req{};
+    req.body = std::string(R"({"key":"01","value":21,"delay_ms":)") +
+               std::to_string(delay) + "}";
+    req.content_len = static_cast<int>(req.body.size());
+    REQUIRE(ValuesApi::handleValuesWrite(&req) == ESP_OK);
+    REQUIRE(req.status == (delay == 0 ? "200 OK" : "202 Accepted"));
+  }
+}
+
+TEST_CASE("Delayed writes send only the last value after the last deadline", "[values_api]") {
+  DelayedWriteFixture fixture;
+  const auto first = fixture.message(20);
+  const auto last = fixture.message(21.5);
+  REQUIRE(command_manager.queueWriteAt("01", first, 2000, 1000));
+  REQUIRE(command_manager.queueWriteAt("01", last, 2000, 2500));
+  command_manager.processDelayedWritesAt(3000);
+  REQUIRE(fixture.queued() == 0);
+  REQUIRE(command_manager.delayed_writes_.size() == 1);
+  REQUIRE(command_manager.delayed_writes_[0].message == last);
+  command_manager.processDelayedWritesAt(4499);
+  REQUIRE(fixture.queued() == 0);
+  command_manager.processDelayedWritesAt(4500);
+  REQUIRE(command_manager.delayed_writes_.empty());
+  REQUIRE(fixture.queued() == 2);  // One write, followed by one read.
+  REQUIRE(command_manager.findCommand("01")->getPendingReadId() != 0);
+  command_manager.processDelayedWritesAt(9000);
+  REQUIRE(fixture.queued() == 2);
+}
+
+TEST_CASE("A repeated value also restarts the write delay", "[values_api]") {
+  DelayedWriteFixture fixture;
+  auto message = fixture.message(21);
+  REQUIRE(command_manager.queueWriteAt("01", message, 2000, 0));
+  REQUIRE(command_manager.queueWriteAt("01", message, 2000, 1999));
+  command_manager.processDelayedWritesAt(2000);
+  REQUIRE(fixture.queued() == 0);
+  command_manager.processDelayedWritesAt(3999);
+  REQUIRE(fixture.queued() == 2);
+}
+
+TEST_CASE("Immediate writes supersede waiting writes only when enqueue succeeds", "[values_api]") {
+  DelayedWriteFixture fixture;
+  auto message = fixture.message(21);
+  REQUIRE(command_manager.queueWriteAt("01", message, 2000, 0));
+  SECTION("Accepted immediate write cancels the pending value") {
+    REQUIRE(command_manager.queueWriteAt("01", fixture.message(22), 0, 1000));
+    REQUIRE(command_manager.delayed_writes_.empty());
+    command_manager.processDelayedWritesAt(2000);
+    REQUIRE(fixture.queued() == 1);
+  }
+  SECTION("Rejected immediate write leaves the pending value intact") {
+    while (getEbusController().enqueue(app::priority::send, message) != 0) {}
+    REQUIRE_FALSE(command_manager.queueWriteAt("01", fixture.message(22), 0, 1000));
+    REQUIRE(command_manager.delayed_writes_.size() == 1);
+    REQUIRE(command_manager.delayed_writes_[0].message == message);
+    command_manager.processDelayedWritesAt(2000);
+    REQUIRE(command_manager.delayed_writes_.empty());  // Failed once, no app retry.
+    REQUIRE(command_manager.findCommand("01")->getPendingReadId() == 0);
+  }
+}
+
+TEST_CASE("Pending writes are cancelled when their command changes or disappears", "[values_api]") {
+  DelayedWriteFixture fixture;
+  REQUIRE(command_manager.queueWriteAt("01", fixture.message(21), 2000, 0));
+  SECTION("Command replaced") {
+    const auto json = makeCommandJson();
+    ebus::detail::JsonReader reader(json);
+    command_manager.insertCommand(Command::fromJson(reader));
+  }
+  SECTION("Command removed") { command_manager.removeCommand("01"); }
+  SECTION("All commands removed") { command_manager.removeAll(); }
+  SECTION("Application stopping") { command_manager.clearDelayedWrites(); }
+  command_manager.processDelayedWritesAt(2000);
+  REQUIRE(command_manager.delayed_writes_.empty());
+  REQUIRE(fixture.queued() == 0);
+}
+
+TEST_CASE("Different keys have independent delayed write deadlines", "[values_api]") {
+  DelayedWriteFixture fixture;
+  std::string json = makeCommandJson();
+  json.replace(json.find("01"), 2, "02");
+  ebus::detail::JsonReader reader(json);
+  command_manager.insertCommand(Command::fromJson(reader));
+  auto message = fixture.message(21);
+  REQUIRE(command_manager.queueWriteAt("01", message, 2000, 1000));
+  REQUIRE(command_manager.queueWriteAt("02", message, 2000, 2000));
+  command_manager.processDelayedWritesAt(3000);
+  REQUIRE(command_manager.delayed_writes_.size() == 1);
+  REQUIRE(command_manager.findCommand("01")->getPendingReadId() != 0);
+  REQUIRE(command_manager.findCommand("02")->getPendingReadId() == 0);
+  command_manager.processDelayedWritesAt(4000);
+  REQUIRE(command_manager.delayed_writes_.empty());
+  REQUIRE(fixture.queued() == 4);
+}
+
+TEST_CASE("A full delayed write queue rejects new keys but accepts replacements", "[values_api]") {
+  DelayedWriteFixture fixture;
+  auto message = fixture.message(21);
+  for (size_t i = 0; i <= CommandManager::write_cmd_capacity_; ++i) {
+    std::string json = makeCommandJson();
+    const auto key = "delay_" + std::to_string(i);
+    json.replace(json.find("01"), 2, key);
+    ebus::detail::JsonReader reader(json);
+    command_manager.insertCommand(Command::fromJson(reader));
+    REQUIRE(command_manager.queueWriteAt(key, message, 2000, 0) ==
+            (i < CommandManager::write_cmd_capacity_));
+  }
+  REQUIRE(command_manager.queueWriteAt("delay_0", message, 3000, 1000));
+  REQUIRE(command_manager.delayed_writes_[0].due_ms == 4000);
+}
