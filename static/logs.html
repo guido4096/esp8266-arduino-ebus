@@ -78,6 +78,7 @@
             <label style="font-size:0.9rem;"><input type="checkbox" value="WARN" checked /> WARN</label>
             <label style="font-size:0.9rem;"><input type="checkbox" value="ERROR" checked /> ERROR</label>
         </div>
+        <label style="font-size:0.9rem;"><input type="checkbox" id="chkWritesOnly"> Writes only</label>
         <span id="status">Connecting…</span>
     </div>
     <div id="logsTableContainer">
@@ -167,6 +168,13 @@
                 .map(cb => cb.value);
         }
 
+        function matchesLogFilter(logEntry, checkedLevels) {
+            if (logEntry.logRestart) return true;
+            if (!checkedLevels.includes(logEntry.level)) return false;
+            return !document.getElementById('chkWritesOnly').checked ||
+                (typeof logEntry.message === 'string' && logEntry.message.startsWith('[WRITE]'));
+        }
+
         function escapeHtml(value) {
             return String(value)
                 .replace(/&/g, '&amp;')
@@ -211,7 +219,7 @@
             const rows = [];
 
             for (const logEntry of storedEntries) {
-                if (!logEntry.logRestart && !checkedLevels.includes(logEntry.level)) continue;
+                if (!matchesLogFilter(logEntry, checkedLevels)) continue;
                 renderedLines.push(buildRenderedLine(logEntry));
                 rows.push(buildRenderedRow(logEntry));
             }
@@ -232,7 +240,7 @@
             }
 
             for (const logEntry of newEntries) {
-                if (!logEntry.logRestart && !checkedLevels.includes(logEntry.level)) continue;
+                if (!matchesLogFilter(logEntry, checkedLevels)) continue;
                 renderedLines.unshift(buildRenderedLine(logEntry));
                 logsBody.insertAdjacentHTML('afterbegin', buildRenderedRow(logEntry));
             }
@@ -375,6 +383,7 @@
                 : '';
             downloadTextFile(text, 'esp-ebus-log.txt', 'text/plain');
         });
+        document.getElementById('chkWritesOnly').addEventListener('change', renderFromStoredData);
         document.getElementById('chkDate').addEventListener('change', function () {
             showDate = this.checked;
             if (showDate) {

@@ -737,7 +737,7 @@ void Mqtt::handleWrite(std::string_view payload) {
         publishResponse("write", "Invalid write command format");
         return;
       }
-      if (!command_manager.queueWrite(command->getKey(), full_write)) {
+      if (!command_manager.queueWrite(command->getKey(), full_write, 0, val_view)) {
         publishResponse("write", "Unable to queue write command");
         return;
       }
@@ -815,7 +815,7 @@ void Mqtt::handleDirectWrite(std::string_view key, std::string_view val_view) {
       logger.warn("Invalid write command format");
       return;
     }
-    if (!command_manager.queueWrite(command->getKey(), full_write)) {
+    if (!command_manager.queueWrite(command->getKey(), full_write, 0, val_view)) {
       logger.warn("[MQTT] Unable to queue write command");
       return;
     }

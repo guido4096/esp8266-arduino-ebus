@@ -526,7 +526,7 @@ void Cron::tick() {
         logger.warn("Cron skipped: invalid write command format");
         continue;
       }
-      if (!command_manager.queueWrite(command->getKey(), full_write)) {
+      if (!command_manager.queueWrite(command->getKey(), full_write, 0, rule.value_json)) {
         logger.warn("Cron skipped: unable to queue write command");
         continue;
       }
