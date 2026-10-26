@@ -208,7 +208,8 @@ bool App::initServices() {
   runtime_config.device.max_startup_scans = 5;
 
   // Scheduler
-  runtime_config.scheduler.max_attempts = 1;
+  // Three total attempts allow recovery from normal bus contention.
+  runtime_config.scheduler.max_attempts = 3;
   runtime_config.scheduler.base_backoff_ms = 100;
   runtime_config.scheduler.fsm_timeout_ms = 1000;
   runtime_config.scheduler.total_timeout_ms = 2000;
@@ -247,7 +248,8 @@ bool App::initServices() {
   runtime_config.device.max_startup_scans = 5;
 
   // Scheduler
-  runtime_config.scheduler.max_attempts = 1;
+  // Three total attempts allow recovery from normal bus contention.
+  runtime_config.scheduler.max_attempts = 3;
   runtime_config.scheduler.base_backoff_ms = 100;
   runtime_config.scheduler.fsm_timeout_ms = 1000;
   runtime_config.scheduler.total_timeout_ms = 2000;

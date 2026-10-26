@@ -455,3 +455,26 @@ TEST_CASE("Rejected delayed dispatch and cancellation remain visible at INFO lev
     REQUIRE(found);
   }
 }
+
+TEST_CASE("Exhausted arbitration is logged once as a terminal write failure", "[values_api]") {
+  DelayedWriteFixture fixture;
+  logger.clearInfoMessages();
+  REQUIRE(command_manager.queueWrite("01", fixture.message(21)));
+  const auto session_id = command_manager.write_traces_.back().session_id;
+  ebus::ProtocolInfo info{};
+  info.session_id = session_id;
+  info.is_error = true;
+  info.protocol_error = ebus::ProtocolError::arbitration_lost;
+  info.attempts = 3;
+  command_manager.logWriteResult(info);
+  command_manager.logWriteResult(info);
+  size_t failures = 0;
+  for (const auto& entry : logger.infoMessages()) {
+    if (entry.message.find("event=bus_failed") != std::string::npos) {
+      ++failures;
+      REQUIRE(entry.message.find("arbitration_attempts_exhausted attempts=3") != std::string::npos);
+      REQUIRE(entry.session_id == session_id);
+    }
+  }
+  REQUIRE(failures == 1);
+}

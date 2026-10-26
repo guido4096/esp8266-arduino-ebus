@@ -127,7 +127,7 @@ class CommandManager {
     uint32_t request_id = 0;
     uint32_t session_id = 0;
     uint8_t key_id = 0;
-    bool success_logged = false;
+    bool terminal_logged = false;
   };
   uint32_t next_write_request_id_ = 0;
   ebus::StaticVector<WriteTrace, write_cmd_capacity_ * 2> write_traces_;
