@@ -16,3 +16,5 @@ include/app/build_info_gen.hpp
 # User profiles
 profiles/data_profiles_user.json
 profiles/ha_profiles_user.json
+
+include/system/firmware_version_gen.hpp

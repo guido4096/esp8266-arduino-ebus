@@ -1,9 +1,10 @@
+import json
 import subprocess
 from pathlib import Path
 
 Import("env")
 
-def get_firmware_specifier_build_flag():
+def get_firmware_version():
     force_version_file = Path("force_version.txt")
     if force_version_file.exists():
         build_version = force_version_file.read_text(encoding="utf-8").strip()
@@ -28,10 +29,17 @@ def get_firmware_specifier_build_flag():
                 check=True,
             )
             build_version = ret.stdout.strip()
-    build_flag = "-D AUTO_VERSION=\\\"" + build_version + "\\\""
-    print ("Firmware Revision: " + build_version)
-    return (build_flag)
+    print("Firmware Revision: " + build_version)
+    return build_version
 
-env.Append(
-    BUILD_FLAGS=[get_firmware_specifier_build_flag()]
-)
+
+# Keep Git metadata out of BUILD_FLAGS: global flag changes invalidate all
+# ESP-IDF and dependency objects, even though only the app displays it.
+output = Path(env.subst("$PROJECT_DIR")) / "include/system/firmware_version_gen.hpp"
+content = ("#pragma once\n"
+           "// Auto-generated; do not edit.\n"
+           "inline constexpr char firmware_revision[] = " +
+           json.dumps(get_firmware_version()) + ";\n")
+if not output.exists() or output.read_text(encoding="utf-8") != content:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(content, encoding="utf-8")

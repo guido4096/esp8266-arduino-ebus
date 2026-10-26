@@ -1,3 +1,4 @@
+#include "system/firmware_version.hpp"
 #if defined(EBUS_INTERNAL)
 #include "app/mqtt.hpp"
 
@@ -388,7 +389,7 @@ void Mqtt::taskFunc(void* arg) {
                   "uptime",
                   static_cast<uint32_t>(esp_timer_get_time() / 1000000ULL));
               writer.writeField("reset_code", DeviceStatus::resetCode());
-              writer.writeField("version", AUTO_VERSION);
+              writer.writeField("version", firmwareVersion());
               writer.writeField("build", __DATE__ " " __TIME__);
               {
                 auto heap = writer.objectScope("heap");

@@ -52,6 +52,7 @@ target_compile_definitions(host_test_settings INTERFACE
 target_link_libraries(host_test_settings INTERFACE ebus)
 
 add_library(system_test_support STATIC
+    ${PROJECT_ROOT}/src/system/firmware_version.cpp
     ${PROJECT_ROOT}/src/system/string_pool.cpp
 )
 target_link_libraries(system_test_support PUBLIC host_test_settings)
@@ -254,6 +255,11 @@ target_link_libraries(identity_tests PRIVATE
 )
 
 enable_testing()
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME build_generators
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/build_scripts/generation_tests.py)
+endif()
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
     add_test(NAME config_page_defaults
