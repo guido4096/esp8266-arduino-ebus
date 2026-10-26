@@ -73,6 +73,10 @@ class Command {
 
   command_types::WriteType getWriteType() const { return write_type_; }
   const char* getWriteTypeName() const;
+
+  uint32_t getWriteSessionId() const { return write_session_id_; }
+  void setWriteSessionId(uint32_t id) { write_session_id_ = id; }
+
   uint32_t getPendingReadId() const { return pending_read_id_; }
   void setPendingReadId(uint32_t id) { pending_read_id_ = id; }
 
@@ -128,6 +132,7 @@ class Command {
  private:
   uint32_t session_id_ = 0;
   uint32_t pending_read_id_ = 0;
+  uint32_t write_session_id_ = 0;
   uint16_t poll_id_ = 0;
   uint32_t last_ = 0;
   PollSequence data_;

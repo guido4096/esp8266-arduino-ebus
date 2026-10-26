@@ -27,14 +27,22 @@ telegram is logged in hex so its actual bytes can be inspected.
 - `rejected`: either the delayed-write queue or the eBUS queue rejected it.
 - `cancelled`: a waiting request was cancelled, for example by an immediate
   write, command replacement/removal, or application shutdown.
+- `superseded`: an older bus session was cancelled because a newer request
+  was accepted, or its command was removed or replaced. `replacement_req`
+  identifies the newer request when applicable. A queued retry is removed;
+  an active attempt may finish but will not retry.
 - `bus_error`: an attempt produced an error. Retries remain library-managed;
   this line alone does not establish terminal failure.
 - `bus_failed`: all configured arbitration attempts were exhausted; this is
   a terminal failure for that session.
 - `bus_success`: the library reported a completed telegram. This does not
   establish that the target device stored the requested setting.
+- `bus_success_superseded` / `bus_error_superseded`: a result arrived for an
+  old session after it was superseded. No readback is requested for it.
 - `read_requested` / `read_queue_rejected`: a readback was requested or its
-  enqueue failed. These messages carry the read session ID in the SID column.
+  enqueue failed. Automatic write readback is requested after successful
+  completion of the current write. These messages carry the read session ID
+  in the SID column.
 - `readback`: a configured writable command received new data. Its decoded
   value is logged with the read session ID when available. `req=0` means this
   observation is not assigned to a particular write request; periodic reads
@@ -44,8 +52,9 @@ To investigate a missing final value, compare the last `received` value with
 the next `bus_queued` telegram and subsequent readbacks for that key. A later
 `received` line containing an older value can expose a client feedback loop.
 
-Result correlation uses bounded diagnostic history (twice
-`WRITE_CMD_CAPACITY`, 32 sessions by default). Eviction affects logging only.
+Result logging uses bounded diagnostic history (twice
+`WRITE_CMD_CAPACITY`, 32 sessions by default). Functional write-session tracking
+is stored separately on each command, so eviction affects logging only.
 The INTERNAL build retains 32 log entries, shared with other diagnostics.
 Keep the Logs page open during the
 test and download the capture promptly. Missing result lines alone are not

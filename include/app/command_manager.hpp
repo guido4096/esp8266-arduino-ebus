@@ -72,8 +72,8 @@ class CommandManager {
   bool queueWrite(std::string_view key, ebus::ByteView message,
                   uint32_t delay_ms = 0, std::string_view value = {});
   void processDelayedWrites();
-  void clearDelayedWrites();
-  void logWriteResult(const ebus::ProtocolInfo& info);
+  void cancelWrites();
+  void handleWriteResult(const ebus::ProtocolInfo& info);
 
   // Write command storage (separate from Command to save memory)
   ebus::ByteView getWriteCmd(size_t idx) const;
@@ -120,6 +120,8 @@ class CommandManager {
   void processDelayedWritesAt(uint64_t now_ms);
   void cancelDelayedWrite(uint8_t key_id,
                           const char* reason = "command_changed_or_removed");
+  void supersedeWrite(Command& command, const char* reason,
+                      uint32_t replacement_request_id = 0);
   void trackWrite(uint32_t request_id, uint8_t key_id, uint32_t session_id,
                   ebus::ByteView message);
 
@@ -128,6 +130,7 @@ class CommandManager {
     uint32_t session_id = 0;
     uint8_t key_id = 0;
     bool terminal_logged = false;
+    bool superseded = false;
   };
   uint32_t next_write_request_id_ = 0;
   ebus::StaticVector<WriteTrace, write_cmd_capacity_ * 2> write_traces_;

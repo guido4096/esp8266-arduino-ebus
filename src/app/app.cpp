@@ -482,7 +482,7 @@ void App::stop() {
   mqtt_.stopTask();
 
   // Now safe to stop other components
-  command_manager.clearDelayedWrites();
+  command_manager.cancelWrites();
   cron.stop();
   stopEbus();
   monitor_.stop();

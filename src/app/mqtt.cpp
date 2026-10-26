@@ -755,7 +755,6 @@ void Mqtt::handleWrite(std::string_view payload) {
                                command->getName().data());
                       writer.writeField("status", status_buf);
                     });
-      requestCommandRead(*command);
     } else {
       // Use snprintf for error response
       publishStream("response", 0, false,
@@ -820,7 +819,6 @@ void Mqtt::handleDirectWrite(std::string_view key, std::string_view val_view) {
       logger.warn("[MQTT] Unable to queue write command");
       return;
     }
-    requestCommandRead(*command);
     char buf[128];
     snprintf(buf, sizeof(buf), "[MQTT] Scheduled write for '%.*s'",
              (int)key.size(), key.data());
