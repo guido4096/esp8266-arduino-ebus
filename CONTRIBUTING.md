@@ -103,6 +103,20 @@ ctest --test-dir test_host/build -j$(nproc) --timeout 10 --output-on-failure
 
 `test_host` resolves the ebus library itself (local `lib/ebus` symlink or pinned FetchContent — `EBUS_PIN` must match the `lib_deps` pin); sanitizer runs pass `-DDISABLE_CATCH_DISCOVERY=ON`.
 
+### Incremental builds
+
+The Git revision is generated into a header used by
+`src/system/firmware_version.cpp`, rather than a global compiler flag. A new
+commit or clean/dirty transition therefore does not invalidate ESP-IDF and
+library objects. Profile headers are rewritten only when their content changes.
+
+The build stamp updates when project inputs, configured build flags or local
+`symlink://` library sources change. An unchanged build keeps the existing
+stamp and objects. Compiler, framework, environment or global build-flag changes
+can still require a full rebuild. Build one process per environment/build
+directory; concurrent builds or clean operations can invalidate each other's
+generated files.
+
 ### ebus Library Source Linking
 
 The `ebus` library is vendored into `lib/ebus/` and is built as part of the PlatformIO and host test build. For development, you may want to modify the library source directly or link it from an external checkout.

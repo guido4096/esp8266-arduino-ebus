@@ -1,3 +1,4 @@
+#include "system/firmware_version.hpp"
 #include "api/system_api.hpp"
 
 #if defined(EBUS_INTERNAL)
@@ -54,7 +55,7 @@ esp_err_t SystemApi::handleSystem(httpd_req_t* req) {
     auto scope = writer.objectScope();
     {
       auto firmware = writer.objectScope("firmware");
-      writer.writeField("version", AUTO_VERSION);
+      writer.writeField("version", firmwareVersion());
 #if __has_include("app/build_info_gen.hpp")
       writer.writeField("build", build_time_str);
 #else

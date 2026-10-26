@@ -1,3 +1,4 @@
+#include "system/firmware_version.hpp"
 #include "api/status_api.hpp"
 
 #include "network/http.hpp"
@@ -68,10 +69,10 @@ esp_err_t StatusApi::handleHealth(httpd_req_t* req) {
   {
     auto scope = writer.objectScope();
 #if __has_include("app/build_info_gen.hpp")
-    writer.writeField("firmware", AUTO_VERSION);
+    writer.writeField("firmware", firmwareVersion());
     writer.writeField("build", build_time_str);
 #else
-    writer.writeField("firmware", AUTO_VERSION);
+    writer.writeField("firmware", firmwareVersion());
     writer.writeField("build", __DATE__ " " __TIME__);
 #endif
     writer.writeField("uptime",

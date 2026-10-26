@@ -1,3 +1,4 @@
+#include "system/firmware_version.hpp"
 #include "main.hpp"
 
 #include <esp_rom_sys.h>
@@ -20,7 +21,7 @@
 ConfigManager config_manager;
 
 extern "C" void app_main(void) {
-  logger.info("Starting esp-ebus adapter version " AUTO_VERSION);
+  logger.info(std::string("Starting esp-ebus adapter version ") + firmwareVersion());
 
 #if defined(EBUS_INTERNAL)
   // Connect library logger to app logger. Runs on the caller's task

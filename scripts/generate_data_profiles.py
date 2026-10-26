@@ -82,10 +82,17 @@ def generate():
     ])
 
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-    with open(OUTPUT_FILE, "w") as f:
-        f.write("\n".join(lines))
+    content = "\n".join(lines)
+    existing = None
+    if os.path.exists(OUTPUT_FILE):
+        with open(OUTPUT_FILE, "r") as f:
+            existing = f.read()
+    if content != existing:
+        with open(OUTPUT_FILE, "w") as f:
+            f.write(content)
 
-    print(f"Generated {OUTPUT_FILE} with {len(profiles)} data profiles (base: {len(base_profiles)}, overlay: {len(overlay_profiles)})")
+    action = "Generated" if content != existing else "Unchanged"
+    print(f"{action} {OUTPUT_FILE} with {len(profiles)} data profiles (base: {len(base_profiles)}, overlay: {len(overlay_profiles)})")
 
 
 generate()
