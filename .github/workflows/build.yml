@@ -17,7 +17,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
     - name: Check out eBUS fork
-      run: git clone --depth 1 --branch improve-timing https://github.com/guido4096/ebus.git ../ebus
+      run: git clone --depth 1 --branch integrate-improve-timing https://github.com/guido4096/ebus.git ../ebus
     - name: Generate profile headers
       run: |
         python3 scripts/generate_data_profiles.py
@@ -40,7 +40,7 @@ jobs:
         fetch-depth: 0
         fetch-tags: true
     - name: Check out eBUS fork
-      run: git clone --depth 1 --branch improve-timing https://github.com/guido4096/ebus.git ../ebus
+      run: git clone --depth 1 --branch integrate-improve-timing https://github.com/guido4096/ebus.git ../ebus
     - uses: actions/cache@v4
       with:
         path: |
