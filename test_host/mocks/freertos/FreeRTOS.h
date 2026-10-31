@@ -1,9 +1,9 @@
 #pragma once
 
+// Minimal FreeRTOS type definitions for host testing
+
 #include <cstddef>
 #include <cstdint>
-
-// Minimal FreeRTOS type definitions for host testing
 
 #ifdef __cplusplus
 extern "C" {
