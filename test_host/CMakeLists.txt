@@ -17,7 +17,7 @@ set(PROJECT_ROOT ${CMAKE_CURRENT_LIST_DIR}/..)
 
 # Use the same sibling fork as PlatformIO; never patch a downloaded cache.
 set(EBUS_SOURCE_DIR "${PROJECT_ROOT}/../ebus" CACHE PATH "Local eBUS fork")
-if(NOT EXISTS "${EBUS_SOURCE_DIR}/include/ebus/detail/esp_timing.hpp")
+if(NOT EXISTS "${EBUS_SOURCE_DIR}/src/ebus/core/syn_timing.hpp")
     message(FATAL_ERROR "eBUS fork with timing changes required at ${EBUS_SOURCE_DIR}. Set EBUS_SOURCE_DIR to override.")
 endif()
 set(EBUS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)

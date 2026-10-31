@@ -10,7 +10,6 @@ TEST_CASE("AppConfig reset provides migration-safe defaults", "[app_config]") {
   // Values relied upon by the main.cpp migration (must match old fallbacks)
   REQUIRE(cfg.pwm.value == 130);
   REQUIRE(cfg.bus.window_us == 4400);
-  REQUIRE(cfg.bus.offset_us == 50);
   REQUIRE(std::string(cfg.bus.address.c_str()) == "ff");
   REQUIRE(cfg.bus.system_inquiry == false);
   REQUIRE(cfg.bus.system_response == true);
@@ -46,10 +45,6 @@ TEST_CASE("AppConfig isValid rejects out-of-range values", "[app_config]") {
   REQUIRE(bad.isValid() == false);
 
   bad = cfg;
-  bad.bus.offset_us = 500;
-  REQUIRE(bad.isValid() == false);
-
-  bad = cfg;
   bad.bus.address.assign("");
   REQUIRE(bad.isValid() == false);
 
@@ -75,7 +70,6 @@ TEST_CASE("AppConfig mergeFlatJson applies NVS-keyed string values",
   REQUIRE(cfg.mqtt.enabled == true);
   REQUIRE(cfg.bus.scan_on_startup == true);
   // Untouched keys keep their values
-  REQUIRE(cfg.bus.offset_us == 50);
   REQUIRE(std::string(cfg.bus.address.c_str()) == "ff");
 
   // Boolean false spellings
@@ -132,14 +126,15 @@ TEST_CASE("AppConfig::collectDrift reports staged keys only", "[app_config]") {
   REQUIRE(keys[1] == "mqttEnabled");
 }
 
-TEST_CASE("INTERNAL config rejects unsafe combined arbitration timing", "[app_config][timing]") {
+TEST_CASE("AppConfig validates the library arbitration window bounds", "[app_config][timing]") {
   AppConfig cfg;
   cfg.reset();
-  cfg.bus.window_us = 4400;
-  cfg.bus.offset_us = 200;
-  REQUIRE_FALSE(cfg.isValid());
-  cfg.bus.offset_us = 0;
-  REQUIRE(cfg.isValid());
-  cfg.bus.window_us = 4500;
-  REQUIRE_FALSE(cfg.isValid());
+  for (uint16_t window : {4332, 4400, 4424}) {
+    cfg.bus.window_us = window;
+    REQUIRE(cfg.isValid());
+  }
+  for (uint16_t window : {4331, 4425, 4500}) {
+    cfg.bus.window_us = window;
+    REQUIRE_FALSE(cfg.isValid());
+  }
 }

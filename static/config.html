@@ -120,8 +120,6 @@
         </select></div>
         <div><label for="busWindow">Bus Window (us)</label></div>
         <div><input id="busWindow" type="number" step="1" class="config"></div>
-        <div><label for="busOffset">Bus Offset (us)</label></div>
-        <div><input id="busOffset" type="number" step="1" class="config"></div>
         <div><label><input id="systemInquiry" type="checkbox" class="config">Inquiry Of Existence</label></div>
         <div><label><input id="systemResponse" type="checkbox" class="config">Send Response</label></div>
         <div><label><input id="scanOnStartup" type="checkbox" class="config">Scan On Startup</label></div>
@@ -216,7 +214,7 @@
                 const res = await fetch('/api/v1/app/config');
                 if (!res.ok) throw new Error('Load failed');
                 const cfg_obj = await res.json();
-                const required = ['pwmValue', 'busWindow', 'busOffset', 'ebusAddress'];
+                const required = ['pwmValue', 'busWindow', 'ebusAddress'];
                 if (!required.every(id => cfg_obj.fields?.[id]?.default !== undefined)) {
                     throw new Error('Configuration defaults unavailable');
                 }

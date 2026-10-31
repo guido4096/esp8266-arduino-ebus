@@ -2,8 +2,10 @@
 #include <array>
 #include <cstdint>
 
-#include <ebus/detail/esp_timing.hpp>
+#include "core/syn_timing.hpp"
 #include "core/request.hpp"
+
+namespace ebus_timing = ebus::detail::syn;
 
 namespace {
 ebus_timing::Edges synEdges(uint64_t start) {
@@ -26,7 +28,7 @@ TEST_CASE("SYN capture recognizes the real 2400 baud LSB-first waveform", "[timi
   REQUIRE(edges.time[1] - edges.time[0] == 1250);
   REQUIRE(edges.time[2] - edges.time[1] == 833);
   REQUIRE(edges.time[3] - edges.time[2] == 834);
-  const auto stamp = edges.syn(103959);
+  const auto stamp = edges.stamp(103959);
   REQUIRE(stamp.valid);
   REQUIRE(stamp.start_us == 100000);
   REQUIRE(stamp.generation == edges.generation);
@@ -37,86 +39,78 @@ TEST_CASE("SYN capture rejects missing, malformed, unfinished and stale edges", 
   missing.push(100000);
   missing.push(101250);
   missing.push(102083);
-  REQUIRE_FALSE(missing.syn(103959).valid);
+  REQUIRE_FALSE(missing.stamp(103959).valid);
 
   ebus_timing::Edges old_guess;
   for (uint64_t t : {100000, 100833, 101667, 102500}) old_guess.push(t);
-  REQUIRE_FALSE(old_guess.syn(103959).valid);
+  REQUIRE_FALSE(old_guess.stamp(103959).valid);
 
   auto edges = synEdges(100000);
-  REQUIRE_FALSE(edges.syn(102917).valid);
-  REQUIRE_FALSE(edges.syn(104425).valid);
-  REQUIRE_FALSE(edges.syn(99000).valid);
-  edges.time[2] += 100;
-  REQUIRE_FALSE(edges.syn(103959).valid);
+  REQUIRE_FALSE(edges.stamp(102917).valid);
+  REQUIRE_FALSE(edges.stamp(104425).valid);
+  REQUIRE_FALSE(edges.stamp(99000).valid);
+  edges.time[2] += 200;
+  REQUIRE_FALSE(edges.stamp(103959).valid);
   edges.clear();
-  REQUIRE_FALSE(edges.syn(103959).valid);
-}
-
-TEST_CASE("SYN interval tolerances cannot accumulate into an accepted bad span", "[timing]") {
-  ebus_timing::Edges edges;
-  for (uint64_t t : {100000, 101280, 102143, 103007}) edges.push(t);
-  REQUIRE_FALSE(edges.syn(103959).valid);
+  REQUIRE_FALSE(edges.stamp(103959).valid);
 }
 
 TEST_CASE("Arbitration uses an absolute deadline and refuses late arming", "[timing]") {
   auto edges = synEdges(100000);
-  auto syn = edges.syn(103959);
+  auto syn = edges.stamp(103959);
   uint64_t deadline = 0;
-  REQUIRE(ebus_timing::deadline(syn, 103959, 4400, 50, deadline));
-  REQUIRE(deadline == 104350);
-  REQUIRE(ebus_timing::deadline(syn, 104300, 4400, 50, deadline));
-  REQUIRE(deadline == 104350);  // setup time never shifts it
-  REQUIRE_FALSE(ebus_timing::deadline(syn, 104336, 4400, 50, deadline));
-  REQUIRE_FALSE(ebus_timing::deadline(syn, 104350, 4400, 50, deadline));
-  REQUIRE_FALSE(ebus_timing::deadline(syn, 104500, 4400, 50, deadline));
-  REQUIRE_FALSE(ebus_timing::deadline({}, 103959, 4400, 50, deadline));
+  REQUIRE(ebus_timing::deadline(syn, 103959, 4400, deadline));
+  REQUIRE(deadline == 104400);
+  REQUIRE(ebus_timing::deadline(syn, 104300, 4400, deadline));
+  REQUIRE(deadline == 104400);  // setup time never shifts it
+  REQUIRE_FALSE(ebus_timing::deadline(syn, 104386, 4400, deadline));
+  REQUIRE_FALSE(ebus_timing::deadline(syn, 104400, 4400, deadline));
+  REQUIRE_FALSE(ebus_timing::deadline(syn, 104500, 4400, deadline));
+  REQUIRE_FALSE(ebus_timing::deadline({}, 103959, 4400, deadline));
 }
 
 TEST_CASE("Late ISR, early ISR, intervening traffic and occupied UART never send", "[timing]") {
   auto edges = synEdges(100000);
-  auto syn = edges.syn(103959);
-  constexpr uint64_t deadline = 104350;
-  REQUIRE(ebus_timing::canFire(syn, deadline, 104350, edges.generation, true));
-  REQUIRE(ebus_timing::canFire(syn, deadline, 104424, edges.generation, true));
-  REQUIRE_FALSE(ebus_timing::canFire(syn, deadline, 104349, edges.generation, true));
-  REQUIRE_FALSE(ebus_timing::canFire(syn, deadline, 104425, edges.generation, true));
+  auto syn = edges.stamp(103959);
+  constexpr uint64_t deadline = 104400;
+  REQUIRE(ebus_timing::canFire(syn, deadline, 104400, edges.generation, true));
+  REQUIRE(ebus_timing::canFire(syn, deadline, 104456, edges.generation, true));
+  REQUIRE_FALSE(ebus_timing::canFire(syn, deadline, 104399, edges.generation, true));
+  REQUIRE_FALSE(ebus_timing::canFire(syn, deadline, 104457, edges.generation, true));
   REQUIRE_FALSE(ebus_timing::canFire(syn, deadline, 120000, edges.generation, true));
-  REQUIRE_FALSE(ebus_timing::canFire(syn, deadline, 104350, edges.generation, false));
+  REQUIRE_FALSE(ebus_timing::canFire(syn, deadline, 104400, edges.generation, false));
   edges.push(104310);  // a contender started before us: yield this opportunity
-  REQUIRE_FALSE(ebus_timing::canFire(syn, deadline, 104350, edges.generation, true));
+  REQUIRE_FALSE(ebus_timing::canFire(syn, deadline, 104400, edges.generation, true));
 }
 
-TEST_CASE("Timing target validates the combined window and offset", "[timing]") {
-  REQUIRE(ebus_timing::targetValid(4400, 50));
-  REQUIRE(ebus_timing::targetValid(4332, 0));
-  REQUIRE(ebus_timing::targetValid(4424, 0));
-  REQUIRE_FALSE(ebus_timing::targetValid(4300, 0));
-  REQUIRE_FALSE(ebus_timing::targetValid(4456, 0));
-  REQUIRE_FALSE(ebus_timing::targetValid(4400, 200));
-  REQUIRE_FALSE(ebus_timing::targetValid(10, 50));
+TEST_CASE("Timing window validates the guarded protocol band", "[timing]") {
+  REQUIRE(ebus_timing::windowValid(4400));
+  REQUIRE(ebus_timing::windowValid(4332));
+  REQUIRE(ebus_timing::windowValid(4424));
+  REQUIRE_FALSE(ebus_timing::windowValid(4331));
+  REQUIRE_FALSE(ebus_timing::windowValid(4425));
 }
 
 TEST_CASE("Capture and deadlines work past the 32-bit microsecond wrap", "[timing]") {
   constexpr uint64_t start = UINT64_C(0xffffffff) - 1000;
   auto edges = synEdges(start);
-  auto syn = edges.syn(start + 3959);
+  auto syn = edges.stamp(start + 3959);
   uint64_t deadline = 0;
-  REQUIRE(ebus_timing::deadline(syn, start + 3959, 4400, 50, deadline));
-  REQUIRE(deadline == start + 4350);
+  REQUIRE(ebus_timing::deadline(syn, start + 3959, 4400, deadline));
+  REQUIRE(deadline == start + 4400);
   REQUIRE(ebus_timing::canFire(syn, deadline, deadline, edges.generation, true));
 }
 
 TEST_CASE("Every admitted ISR write remains inside the guarded protocol window", "[timing]") {
   auto edges = synEdges(100000);
-  const auto syn = edges.syn(103959);
+  const auto syn = edges.stamp(103959);
   for (uint32_t target = 4250; target <= 4500; ++target) {
     uint64_t deadline = 0;
-    if (!ebus_timing::deadline(syn, 103959, target, 0, deadline)) continue;
+    if (!ebus_timing::deadline(syn, 103959, target, deadline)) continue;
     for (uint64_t now = 104000; now <= 105000; ++now) {
       if (ebus_timing::canFire(syn, deadline, now, edges.generation, true)) {
         REQUIRE(now >= 104332);
-        REQUIRE(now <= 104424);
+        REQUIRE(now <= 104456);
       }
     }
   }

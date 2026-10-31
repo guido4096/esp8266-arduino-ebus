@@ -100,13 +100,14 @@ TEST_CASE("AppConfigLoader save/load roundtrip", "[config_nvs]") {
   REQUIRE(loaded.sntp.enabled == true);
   REQUIRE(std::string(loaded.mqtt.server.c_str()) == "mqtt.local");
   // Untouched keys carry reset defaults.
-  REQUIRE(loaded.bus.offset_us == 50);
+  REQUIRE(loaded.bus.system_response);
 }
 
 TEST_CASE("AppConfigLoader load overlays stored keys on defaults",
           "[config_nvs]") {
   config_manager.resetConfig();
   REQUIRE(ConfigManager::writeString("pwmValue", "210") == true);
+  REQUIRE(ConfigManager::writeString("busOffset", "200"));
 
   AppConfig loaded;
   AppConfigLoader loader(config_manager);
@@ -142,9 +143,6 @@ TEST_CASE("Config API supplies firmware defaults and limits without secrets", "[
   REQUIRE(number("busWindow", "default") == defaults.bus.window_us);
   REQUIRE(number("busWindow", "min") == app::limits::Bus::window_min_us);
   REQUIRE(number("busWindow", "max") == app::limits::Bus::window_max_us);
-  REQUIRE(number("busOffset", "default") == defaults.bus.offset_us);
-  REQUIRE(number("busOffset", "min") == app::limits::Bus::offset_min_us);
-  REQUIRE(number("busOffset", "max") == app::limits::Bus::offset_max_us);
   REQUIRE(out.find("4300") != std::string::npos);
   for (auto secret : {"wifiPassword", "apModePassword", "mqttPass",
                       "stored-wifi-secret", "stored-ap-secret", "stored-mqtt-secret",
