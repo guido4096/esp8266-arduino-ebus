@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <ebus/detail/protocol_limits.hpp>
 
 namespace app::limits {
 
@@ -38,8 +39,8 @@ inline constexpr uint8_t max = 255;
 
 // --- Bus / eBUS Protocol ---
 namespace Bus {
-inline constexpr uint16_t window_min_us = 4332;
-inline constexpr uint16_t window_max_us = 4424;
+inline constexpr uint16_t window_min_us = ebus::detail::BusLimits::window_min_us;
+inline constexpr uint16_t window_max_us = ebus::detail::BusLimits::window_max_us;
 }  // namespace Bus
 
 }  // namespace app::limits

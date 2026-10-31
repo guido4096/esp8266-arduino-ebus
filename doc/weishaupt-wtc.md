@@ -53,16 +53,16 @@ Onderstaande vier voorbeelden zetten beneden op 21/16 en boven op 17/13:
 
 ```sh
 curl -f -X POST -H 'Content-Type: application/json' \
-  --data '{"key":"hk2_normal","value":21}' \
+  --data '{"key":"hc2_normal","value":21}' \
   "$EBUS_URL/api/v1/app/values/write"
 curl -f -X POST -H 'Content-Type: application/json' \
-  --data '{"key":"hk2_reduced","value":16}' \
+  --data '{"key":"hc2_reduced","value":16}' \
   "$EBUS_URL/api/v1/app/values/write"
 curl -f -X POST -H 'Content-Type: application/json' \
-  --data '{"key":"hk3_normal","value":17}' \
+  --data '{"key":"hc3_normal","value":17}' \
   "$EBUS_URL/api/v1/app/values/write"
 curl -f -X POST -H 'Content-Type: application/json' \
-  --data '{"key":"hk3_reduced","value":13}' \
+  --data '{"key":"hc3_reduced","value":13}' \
   "$EBUS_URL/api/v1/app/values/write"
 ```
 
@@ -81,7 +81,7 @@ De vier schrijfcommando's hebben een prefix van zeven bytes:
 `destination 50 23 09 00 parameter_lo parameter_hi`.
 `Command::buildWriteSequence` voegt de twee waardebytes en `5d010000` toe en
 vervangt de nul op payloadpositie 1 door de berekende interne checksum.
-Alleen commando's met `"weishaupt_write": true` gebruiken deze opbouw.
+Alleen commando's met `"write_type": "weishaupt"` gebruiken deze opbouw.
 Deze opbouw geldt voor HTTP, MQTT en cron. Andere schrijfcommando's behouden
 hun bestaande opbouw: prefix gevolgd door de gecodeerde waarde.
 
@@ -108,10 +108,10 @@ regeling zijn dit referentieruimtetemperaturen, geen gemeten ruimtetemperatuur.
 
 ```sh
 curl -f -X POST -H 'Content-Type: application/json' \
-  --data '{"key":"hk4_normal","value":25}' \
+  --data '{"key":"hc4_normal","value":25}' \
   "$EBUS_URL/api/v1/app/values/write"
 curl -f -X POST -H 'Content-Type: application/json' \
-  --data '{"key":"hk4_reduced","value":19}' \
+  --data '{"key":"hc4_reduced","value":19}' \
   "$EBUS_URL/api/v1/app/values/write"
 ```
 
@@ -122,7 +122,7 @@ nieuwe meetwaarde. Lees na ontvangst van het bustelegram de waardenlijst op:
 
 ```sh
 curl -f -X POST -H 'Content-Type: application/json' \
-  --data '{"key":"hk2_normal"}' "$EBUS_URL/api/v1/app/values/read"
+  --data '{"key":"hc2_normal"}' "$EBUS_URL/api/v1/app/values/read"
 curl -f "$EBUS_URL/api/v1/app/values"
 ```
 

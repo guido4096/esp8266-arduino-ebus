@@ -14,7 +14,7 @@ The eBUS implementation lives in the sibling fork at `../ebus`
 copy or build-time patch. Host tests use the same directory; override it with
 `cmake -S test_host -B build/host -DEBUS_SOURCE_DIR=/path/to/ebus` if needed.
 
-The timing policy is owned by the fork in `include/ebus/detail/esp_timing.hpp`.
+The timing policy is owned by the fork in `src/ebus/core/syn_timing.hpp`.
 Arbitration timing and UART handling are in `src/ebus/platform/esp/bus_esp.cpp`;
 protocol arbitration is in `src/ebus/core/request.cpp`. Edit those source files
 in the fork. The application retains its post-link IRAM checker and board
@@ -31,16 +31,16 @@ The bus task and ISRs never wait for a FreeRTOS tick to time arbitration.
 
 A continuously running 1 MHz GPTimer timestamps falling RX edges. UART delivery
 of SYN validates the four latest captured edges against the actual LSB-first
-0xAA waveform: falling edges at 0, 3, 5, and 7 bit times. Every interval and the
-total span must match within 40 us. A SYN without that pattern, a stale SYN,
+0xAA waveform: falling edges at 0, 3, 5, and 7 bit times. Each interval must match within 100 us. A SYN without that pattern, a stale SYN,
 a batched UART event, or queued RX data cannot arm arbitration. There is no
 nearest-edge or byte-delivery-time fallback.
 
 Arbitration programs an absolute alarm in that same GPTimer clock domain.
-`window_us - offset_us` selects the target elapsed time after the captured SYN
-start. Defaults remain 4400 - 50 = **4350 us**. The legal protocol window used
-here is 4300–4456 us; the software admits targets and ISR writes only inside
-**4332–4424 us**, leaving 32 us of engineering margin on each side.
+`window_us` selects the target elapsed time after the captured SYN start.
+The application default is **4400 us**. The obsolete bus offset setting is
+ignored. The legal protocol window is 4300–4456 us; configured targets must
+be inside **4332–4424 us**. ISR writes may occur from the target through
+4456 us.
 
 Immediately before FIFO access, the ISR checks the current timer count, the
 captured edge generation, the live request generation, cancellation, UART TX
@@ -128,6 +128,6 @@ known late transmission; sustained contention can reduce throughput.
 Gebruik `own/all-changes` in de firmware-repo en `improve-timing` in de
 eBUS-repo. Deze combinatie bevat de losse upstream-bugfixes, de optionele
 Weishaupt-uitbreiding en de lokale timing-integratie.
-`config/weishaupt-wtc.json` schakelt `weishaupt_write` expliciet in voor de
+`config/weishaupt-wtc.json` stelt `"write_type": "weishaupt"` expliciet in voor de
 zes normale/verlaagde temperatuurinstellingen. De JSON wordt niet automatisch
 geïnstalleerd; upload hem na het flashen van deze firmware.
