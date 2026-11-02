@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "app/app.hpp"
 
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -211,7 +212,8 @@ bool App::initServices() {
   runtime_config.device.max_startup_scans = 5;
 
   // Scheduler
-  runtime_config.scheduler.max_attempts = 1;
+  // Three total attempts allow recovery from normal bus contention.
+  runtime_config.scheduler.max_attempts = 3;
   runtime_config.scheduler.base_backoff_ms = 100;
   runtime_config.scheduler.fsm_timeout_ms = 1000;
   runtime_config.scheduler.total_timeout_ms = 2000;
@@ -250,7 +252,8 @@ bool App::initServices() {
   runtime_config.device.max_startup_scans = 5;
 
   // Scheduler
-  runtime_config.scheduler.max_attempts = 1;
+  // Three total attempts allow recovery from normal bus contention.
+  runtime_config.scheduler.max_attempts = 3;
   runtime_config.scheduler.base_backoff_ms = 100;
   runtime_config.scheduler.fsm_timeout_ms = 1000;
   runtime_config.scheduler.total_timeout_ms = 2000;
@@ -468,24 +471,50 @@ void App::loop() {
   // the end of app_main deletes the main task and frees its stack out from
   // under all still-running service tasks (use-after-free, heap poison).
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
+#if defined(EBUS_INTERNAL)
+    command_manager.processDelayedWrites();
+#endif
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
 void App::stop() {
+  const int64_t shutdown_start_us = esp_timer_get_time();
+  auto log_phase = [](std::string_view phase, int64_t phase_start_us) {
+    logger.info("Upgrade shutdown: " + std::string(phase) +
+                " duration_ms=" +
+                std::to_string((esp_timer_get_time() - phase_start_us) / 1000));
+  };
+  logger.info("Upgrade shutdown: stopping application services");
 #if defined(EBUS_INTERNAL)
   // CRITICAL: Stop MQTT first and wait for task to fully exit
   // This prevents the MQTT task from accessing eBUS/Cron/SystemMonitor
   // resources while they are being stopped
+  int64_t phase_start_us = esp_timer_get_time();
   mqtt_.stopTask();
+  log_phase("MQTT stopped", phase_start_us);
 
   // Now safe to stop other components
+  phase_start_us = esp_timer_get_time();
+  command_manager.cancelWrites();
+  log_phase("pending writes cancelled", phase_start_us);
+  phase_start_us = esp_timer_get_time();
   cron.stop();
+  log_phase("cron stopped", phase_start_us);
+  phase_start_us = esp_timer_get_time();
   stopEbus();
+  log_phase("eBUS stopped", phase_start_us);
+  phase_start_us = esp_timer_get_time();
   monitor_.stop();
+  log_phase("monitor stopped", phase_start_us);
 
   vTaskDelay(pdMS_TO_TICKS(500));
 #else
+  const int64_t phase_start_us = esp_timer_get_time();
   stopClientRuntime();
+  log_phase("client runtime stopped", phase_start_us);
 #endif
+  logger.info("Upgrade shutdown: all services stopped duration_ms=" +
+              std::to_string((esp_timer_get_time() - shutdown_start_us) /
+                             1000));
 }

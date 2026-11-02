@@ -192,8 +192,8 @@ class Mqtt {
 
   MqttPayloadMode payload_mode_ = MqttPayloadMode::json_multivalue;
   bool enabled_ = false;
-  volatile bool task_should_run_ = false;
-  volatile bool task_exited_ = false;
+  std::atomic<bool> task_should_run_{false};
+  std::atomic<bool> task_exited_{false};
   bool connected_ = false;
 
   static constexpr size_t max_outgoing_queue_size_ = 8;

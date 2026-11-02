@@ -50,7 +50,7 @@ TEST_CASE(
     "[string_pool]") {
   StringPool pool;
   REQUIRE(pool.intern(std::string(256, 'x')) == 0);
-  for (int i = 0; i < 8; ++i)
+  for (int i = 0; i < 32; ++i)
     REQUIRE(pool.intern(std::string(255, 'a' + i)) != 0);
   REQUIRE(pool.intern("no room") == 0);
   REQUIRE(pool.intern(std::string(255, 'a')) == 1);

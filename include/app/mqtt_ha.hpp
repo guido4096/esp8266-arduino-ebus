@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "system/firmware_version.hpp"
+
 #if defined(EBUS_INTERNAL)
 #include <functional>
 #include <string>
@@ -88,7 +90,7 @@ class MqttHA {
   std::string thing_model_;
   std::string thing_model_id_;
   std::string thing_manufacturer_ = "danman.eu";
-  std::string thing_sw_version_ = AUTO_VERSION;
+  std::string thing_sw_version_ = firmwareVersion();
   std::string thing_hw_version_;
   std::string thing_configuration_url_ = "http://esp-ebus.local/";
 

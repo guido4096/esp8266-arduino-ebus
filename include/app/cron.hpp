@@ -4,8 +4,10 @@
 #if defined(EBUS_INTERNAL)
 
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <atomic>
 #include <cstdint>
 #include <ebus/detail/json_reader.hpp>
 #include <ebus/types.hpp>
@@ -51,8 +53,9 @@ class Cron {
   CommandManager& commands_;
   std::unordered_map<std::string, Rule> rules_;
 
-  volatile bool stop_runner_ = false;
+  std::atomic<bool> stop_runner_{false};
   TaskHandle_t task_handle_ = nullptr;
+  SemaphoreHandle_t stopped_sem_ = nullptr;
 
   mutable std::mutex rules_mutex_;
   void setRules(std::unordered_map<std::string, Rule>&& next_rules);

@@ -289,17 +289,41 @@ std::string validateRule(const Cron::Rule& rule, CommandManager& commands) {
 bool Cron::initFileSystem() { return command_manager.initFileSystem(); }
 
 void Cron::start() {
-  stop_runner_ = false;
-  if (task_handle_ == nullptr) {
-    xTaskCreate(&Cron::taskFunc, "cron", app::limits::Task::cron_stack, this,
-                app::limits::Task::cron_priority, &task_handle_);
+  if (task_handle_ != nullptr) return;
+
+  stop_runner_.store(false, std::memory_order_release);
+  stopped_sem_ = xSemaphoreCreateBinary();
+  if (stopped_sem_ == nullptr) {
+    logger.error("Cron failed to create task completion semaphore");
+    return;
+  }
+
+  BaseType_t result =
+      xTaskCreate(&Cron::taskFunc, "cron", app::limits::Task::cron_stack, this,
+                  app::limits::Task::cron_priority, &task_handle_);
+  if (result != pdPASS) {
+    task_handle_ = nullptr;
+    vSemaphoreDelete(stopped_sem_);
+    stopped_sem_ = nullptr;
+    logger.error("Cron failed to start task");
   }
 }
 
 void Cron::stop() {
-  if (stop_runner_ == false) {
-    stop_runner_ = true;
+  if (task_handle_ == nullptr) return;
+
+  stop_runner_.store(true, std::memory_order_release);
+  constexpr TickType_t wait_ticks = pdMS_TO_TICKS(1000);
+  uint32_t waited_ms = 0;
+  while (xSemaphoreTake(stopped_sem_, wait_ticks) != pdTRUE) {
+    waited_ms += 1000;
+    logger.warn("Cron task still running after " + std::to_string(waited_ms) +
+                " ms; waiting before continuing OTA shutdown");
   }
+
+  task_handle_ = nullptr;
+  vSemaphoreDelete(stopped_sem_);
+  stopped_sem_ = nullptr;
 }
 
 Cron::Rule Cron::ruleFromReader(ebus::detail::JsonReader& reader) {
@@ -472,8 +496,8 @@ const std::string Cron::evaluate(ebus::detail::JsonReader& reader) {
 void Cron::taskFunc(void* arg) {
   Cron* self = static_cast<Cron*>(arg);
   for (;;) {
-    if (self->stop_runner_) {
-      self->task_handle_ = nullptr;
+    if (self->stop_runner_.load(std::memory_order_acquire)) {
+      xSemaphoreGive(self->stopped_sem_);
       vTaskDelete(nullptr);
     }
     self->tick();
@@ -527,7 +551,10 @@ void Cron::tick() {
         logger.warn("Cron skipped: invalid write command format");
         continue;
       }
-      getEbusController().enqueue(app::priority::send, full_write);
+      if (!command_manager.queueWrite(command->getKey(), full_write, 0, rule.value_json)) {
+        logger.warn("Cron skipped: unable to queue write command");
+        continue;
+      }
 
       char info_buf[160];
       snprintf(info_buf, sizeof(info_buf), "Cron write triggered: %s -> %s",

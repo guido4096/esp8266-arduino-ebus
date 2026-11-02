@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstdint>
+
 // Minimal esp_timer stub for host testing
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <cstdint>
 
 static inline uint64_t esp_timer_get_time(void) { return 123456789ULL; }
 

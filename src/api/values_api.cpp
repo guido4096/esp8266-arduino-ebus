@@ -3,10 +3,13 @@
 
 #if defined(EBUS_INTERNAL)
 
+#include <algorithm>
 #include <cstdio>
 #include <ebus/detail/json_reader.hpp>
+#include <ebus/utils.hpp>
 
 #include "app/command_manager.hpp"
+#include "app/command_read.hpp"
 #include "app/ebus_accessor.hpp"
 #include "network/http.hpp"
 #include "network/http_utils.hpp"
@@ -70,6 +73,24 @@ esp_err_t ValuesApi::handleValuesWrite(httpd_req_t* req) {
     key = std::string(reader.value());
   }
 
+  uint32_t delay_ms = 0;
+  ebus::detail::JsonReader options(body_sv);
+  if (options.next() == ebus::detail::JsonReader::Token::object_start &&
+      options.findKey("delay_ms")) {
+    const auto token = options.next();
+    const auto value = options.value();
+    const auto parsed = ebus::toNumStrict<uint32_t>(value);
+    if (token != ebus::detail::JsonReader::Token::number || value.empty() ||
+        !std::all_of(value.begin(), value.end(),
+                     [](char c) { return c >= '0' && c <= '9'; }) ||
+        !parsed || *parsed > CommandManager::max_write_delay_ms) {
+      HttpUtils::sendErrorResponse(req, "400 Bad Request", "write",
+                                   "delay_ms must be an integer from 0 to 60000");
+      return ESP_OK;
+    }
+    delay_ms = *parsed;
+  }
+
   Command* command = instance_->command_manager_.findCommand(key);
   if (command == nullptr) {
     HttpUtils::sendErrorResponse(req, "404 Not Found", "write",
@@ -86,9 +107,24 @@ esp_err_t ValuesApi::handleValuesWrite(httpd_req_t* req) {
                                    "Invalid write command format");
       return ESP_OK;
     }
-    getEbusController().enqueue(app::priority::send, full_write);
-    command->setLast(0);
-    HttpUtils::sendSuccessResponse(req, "write");
+    std::string_view requested_value;
+    ebus::detail::JsonReader value_reader(body_sv);
+    if (value_reader.next() == ebus::detail::JsonReader::Token::object_start &&
+        value_reader.findKey("value")) {
+      requested_value = value_reader.rawValue();
+    }
+    if (!instance_->command_manager_.queueWrite(key, full_write, delay_ms,
+                                               requested_value)) {
+      HttpUtils::sendErrorResponse(req, "503 Service Unavailable", "write",
+                                   "Unable to queue write command");
+      return ESP_OK;
+    }
+    if (delay_ms == 0) {
+      HttpUtils::sendSuccessResponse(req, "write");
+    } else {
+      HttpUtils::sendResponse(req, "202 Accepted", "application/json;charset=utf-8",
+          R"({"id":"write","status":"scheduled"})");
+    }
   } else {
     HttpUtils::sendErrorResponse(req, "400 Bad Request", "write",
                                  "Invalid value for key '" + key + "'");
@@ -123,8 +159,15 @@ esp_err_t ValuesApi::handleValuesRead(httpd_req_t* req) {
 
   Command* command = instance_->command_manager_.findCommand(key);
   if (command != nullptr) {
-    command->setLast(0);
-    HttpUtils::sendSuccessResponse(req, "read", "requested");
+    if (!command->getActive()) {
+      HttpUtils::sendErrorResponse(req, "400 Bad Request", "read",
+                                   "Passive command: waiting for bus traffic");
+    } else if (!requestCommandRead(*command)) {
+      HttpUtils::sendErrorResponse(req, "503 Service Unavailable", "read",
+                                   "Unable to queue bus read");
+    } else {
+      HttpUtils::sendSuccessResponse(req, "read", "requested");
+    }
   } else {
     HttpUtils::sendErrorResponse(req, "404 Not Found", "read",
                                  "Key '" + key + "' not found");

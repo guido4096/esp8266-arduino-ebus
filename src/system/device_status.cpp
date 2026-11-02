@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "system/firmware_version.hpp"
 #include "system/device_status.hpp"
 
 #include <esp_chip_info.h>
@@ -91,7 +92,7 @@ struct ArbitrationInfo {
 struct FirmwareStatus {
   void toJson(ebus::detail::JsonWriter& writer) const {
     auto scope = writer.objectScope();
-    writer.writeField("version", AUTO_VERSION);
+    writer.writeField("version", firmwareVersion());
     writer.writeField("build", __DATE__ " " __TIME__);
     writer.writeField("esp_idf_version", esp_get_idf_version());
 #if !defined(EBUS_INTERNAL)
