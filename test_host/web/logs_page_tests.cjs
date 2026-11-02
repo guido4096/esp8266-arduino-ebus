@@ -90,5 +90,24 @@ const entry = i => ({ millis: i, level: i % 2 ? 'INFO' : 'DEBUG', sid: 1, pid: 2
     assert.equal(rows.length, 0);
     assert.equal(run('renderedLines.length'), 0);
     assert.equal(run('seenEntries.size'), 2000);
+    // The write-only filter must affect live rows and rebuilt/downloadable lines.
+    levels.find(level => level.value === 'INFO').checked = true;
+    context.document.getElementById('chkWritesOnly').checked = true;
+    run('renderFromStoredData()');
+    batch([
+        { millis: 30000, level: 'INFO', message: '[WRITE] req=1 event=received' },
+        { millis: 30001, level: 'INFO', message: 'ordinary diagnostic' },
+        { millis: 30002, level: 'DEBUG', message: '[WRITE] req=2 event=received' },
+    ]);
+    assert.equal(rows.length, 1);
+    assert(rows[0].html.includes('[WRITE] req=1'));
+    assert.equal(run('renderedLines.length'), 1);
+    run('renderFromStoredData()');
+    assert.equal(rows.length, 1);
+    assert.equal(run('renderedLines.length'), 1);
+    context.document.getElementById('chkWritesOnly').checked = false;
+    run('renderFromStoredData()');
+    assert(rows.length > 1);
+    assert(rows.some(row => row.html.includes('ordinary diagnostic')));
     console.log('Log retention, deduplication, filters, restart markers and incremental rendering passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
