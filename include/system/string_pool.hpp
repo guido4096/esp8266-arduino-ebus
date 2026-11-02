@@ -49,7 +49,7 @@ class StringPool {
 
  private:
   static constexpr size_t max_strings_ = 255;
-  static constexpr size_t buffer_size_ = 2048;
+  static constexpr size_t buffer_size_ = 8192;
 
   mutable std::mutex mutex_;
   char buffer_[buffer_size_]{};

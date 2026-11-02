@@ -21,11 +21,24 @@
 #endif
 
 #include "app/mqtt.hpp"
+#include "app/command_read.hpp"
 #include "system/logger.hpp"
 
 CommandManager command_manager;
 
 namespace {
+// Called only on application/monitor tasks, never from the bus callback.
+void writeLog(uint32_t request_id, std::string_view key, const char* event,
+              std::string_view detail = {}, uint32_t session_id = 0) {
+  char message[384];
+  snprintf(message, sizeof(message), "[WRITE] req=%lu key=%.*s event=%s %.*s",
+           static_cast<unsigned long>(request_id),
+           static_cast<int>(std::min<size_t>(key.size(), 64)), key.data(), event,
+           static_cast<int>(std::min<size_t>(detail.size(), 240)),
+           detail.empty() ? "" : detail.data());
+  logger.info(message, false, session_id);
+}
+
 constexpr const char* littlefs_base_path = "/littlefs";
 constexpr const char* littlefs_partition_label = "littlefs";
 #ifndef EBUS_COMMANDS_FILE_PATH
@@ -109,6 +122,8 @@ void CommandManager::insertCommand(Command command) {
   for (size_t i = 0; i < commands_.size(); i++) {
     if (std::string_view(commands_[i].getKey()) ==
         std::string_view(command.getKey())) {
+      cancelDelayedWrite(commands_[i].getKeyId());
+      supersedeWrite(commands_[i], "command_replaced");
       uint16_t old_poll_id = commands_[i].getPollId();
       commands_[i] = std::move(command);
       commands_[i].setPollId(old_poll_id);
@@ -126,6 +141,8 @@ void CommandManager::removeCommand(std::string_view key) {
   for (size_t i = 0; i < commands_.size(); i++) {
     if (std::string_view(commands_[i].getKey()) == key) {
       uint8_t removed_key_id = commands_[i].getKeyId();
+      cancelDelayedWrite(removed_key_id);
+      supersedeWrite(commands_[i], "command_removed");
       if (command_removed_callback_) command_removed_callback_(&commands_[i]);
       commands_.erase(commands_.begin() + i);
       removeFieldOverrides(removed_key_id);
@@ -139,6 +156,7 @@ void CommandManager::removeAll() {
   for (size_t i = commands_.size(); i-- > 0;) {
     if (command_removed_callback_) command_removed_callback_(&commands_[i]);
   }
+  cancelWrites();
   commands_.clear();
   clearFieldOverrides();
 }
@@ -290,6 +308,7 @@ int64_t CommandManager::saveCommands() const {
 
 int64_t CommandManager::wipeCommands() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  cancelWrites();
   commands_.clear();
   clearFieldOverrides();
   if (!ensureLittlefsMounted()) return -1;
@@ -429,6 +448,16 @@ void CommandManager::updateData(const ebus::ProtocolInfo& info) {
   if (info.poll_id != 0) {
     command = findCommand(info.poll_id);
   }
+  // Manual reads are one-shot sessions, not recurring poll items.
+  if (!command && info.session_id != 0) {
+    for (auto& candidate : commands_) {
+      if (candidate.getPendingReadId() == info.session_id) {
+        command = &candidate;
+        candidate.setPendingReadId(0);
+        break;
+      }
+    }
+  }
 
   auto update = [this](Command* cmd, const ebus::ProtocolInfo& info) {
     if (cmd->getFieldCount() == 0) return;
@@ -452,6 +481,16 @@ void CommandManager::updateData(const ebus::ProtocolInfo& info) {
       cmd->setData(ebus::range(info.slave_view, 1, data_len));
     }
 
+    if (cmd->hasWriteCmd()) {
+      std::string value;
+      ebus::detail::JsonWriter writer([&value](std::string_view part) {
+        value.append(part);
+      });
+      cmd->getValueJson(writer);
+      writer.flush();
+      writeLog(0, cmd->getKey(), "readback", "value=" + value, info.session_id);
+    }
+
     if (data_updated_callback_) {
       data_updated_callback_(cmd->getKey());
     }
@@ -468,6 +507,207 @@ void CommandManager::updateData(const ebus::ProtocolInfo& info) {
 
   MatchingCommands matching_commands = findPassiveCommands(info.master_view);
   for (Command* cmd : matching_commands) update(cmd, info);
+}
+
+// Hold the manager lock through enqueue/cancellation so an immediate write
+// cannot race an expired delayed write for the same key.
+bool CommandManager::queueWrite(std::string_view key, ebus::ByteView message,
+                                uint32_t delay_ms, std::string_view value) {
+  return queueWriteAt(key, message, delay_ms,
+                      static_cast<uint64_t>(esp_timer_get_time() / 1000ULL), value);
+}
+
+bool CommandManager::queueWriteAt(std::string_view key, ebus::ByteView message,
+                                  uint32_t delay_ms, uint64_t now_ms,
+                                  std::string_view value) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  Command* command = findCommand(key);
+  if (!command || !command->hasWriteCmd() || message.empty() ||
+      delay_ms > max_write_delay_ms) return false;
+
+  if (++next_write_request_id_ == 0) ++next_write_request_id_;
+  const uint32_t request_id = next_write_request_id_;
+  char detail[240];
+  if (!value.empty()) {
+    snprintf(detail, sizeof(detail), "value=%.*s delay_ms=%lu",
+             static_cast<int>(std::min<size_t>(value.size(), 128)), value.data(),
+             static_cast<unsigned long>(delay_ms));
+  } else {
+    snprintf(detail, sizeof(detail), "delay_ms=%lu telegram=%s",
+             static_cast<unsigned long>(delay_ms), ebus::toString(message).c_str());
+  }
+  writeLog(request_id, key, "received", detail);
+
+  if (delay_ms == 0) {
+    const auto session_id = getEbusController().enqueueReplacing(
+        app::priority::send, message, command->getWriteSessionId());
+    if (session_id == 0) {
+      writeLog(request_id, key, "rejected", "reason=bus_queue_unavailable");
+      return false;
+    }
+    cancelDelayedWrite(command->getKeyId(), "superseded_by_immediate_write");
+    supersedeWrite(*command, "newer_request", request_id);
+    command->setWriteSessionId(session_id);
+    trackWrite(request_id, command->getKeyId(), session_id, message);
+    return true;
+  } else {
+    for (auto& pending : delayed_writes_) {
+      if (pending.key_id == command->getKeyId()) {
+        snprintf(detail, sizeof(detail), "previous_req=%lu delay_ms=%lu",
+                 static_cast<unsigned long>(pending.request_id),
+                 static_cast<unsigned long>(delay_ms));
+        writeLog(request_id, key, "replaced", detail);
+        pending.request_id = request_id;
+        pending.message.assign(message);
+        pending.due_ms = now_ms + delay_ms;
+        supersedeWrite(*command, "newer_request", request_id);
+        return true;
+      }
+    }
+    DelayedWrite pending;
+    pending.key_id = command->getKeyId();
+    pending.request_id = request_id;
+    pending.due_ms = now_ms + delay_ms;
+    pending.message.assign(message);
+    if (!delayed_writes_.push_back(std::move(pending))) {
+      writeLog(request_id, key, "rejected", "reason=delayed_queue_full");
+      return false;
+    }
+    supersedeWrite(*command, "newer_request", request_id);
+    writeLog(request_id, key, "waiting");
+    return true;
+  }
+}
+
+void CommandManager::cancelDelayedWrite(uint8_t key_id, const char* reason) {
+  for (auto it = delayed_writes_.begin(); it != delayed_writes_.end(); ++it) {
+    if (it->key_id == key_id) {
+      writeLog(it->request_id, StringPool::instance().lookup(key_id),
+               "cancelled", reason);
+      delayed_writes_.erase(it);
+      return;
+    }
+  }
+}
+
+void CommandManager::cancelWrites() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  for (auto& command : commands_) {
+    supersedeWrite(command, "writes_cancelled");
+  }
+  for (const auto& pending : delayed_writes_) {
+    writeLog(pending.request_id, StringPool::instance().lookup(pending.key_id),
+             "cancelled", "reason=pending_writes_cleared");
+  }
+  delayed_writes_.clear();
+}
+
+void CommandManager::processDelayedWrites() {
+  processDelayedWritesAt(
+      static_cast<uint64_t>(esp_timer_get_time() / 1000ULL));
+}
+
+void CommandManager::processDelayedWritesAt(uint64_t now_ms) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  for (auto it = delayed_writes_.begin(); it != delayed_writes_.end();) {
+    if (now_ms < it->due_ms) {
+      ++it;
+      continue;
+    }
+    const auto key = StringPool::instance().lookup(it->key_id);
+    Command* command = findCommand(key);
+    if (command) {
+      const auto session_id =
+          getEbusController().enqueue(app::priority::send, it->message);
+      if (session_id != 0) {
+        command->setWriteSessionId(session_id);
+        trackWrite(it->request_id, it->key_id, session_id, it->message);
+      } else {
+        writeLog(it->request_id, key, "rejected", "reason=bus_queue_unavailable");
+        logger.warn("Delayed write could not be queued for key: " +
+                    std::string(key));
+      }
+    }
+    // No extra retries: bus retries remain the library's responsibility.
+    it = delayed_writes_.erase(it);
+  }
+}
+
+void CommandManager::supersedeWrite(Command& command, const char* reason,
+                                     uint32_t replacement_request_id) {
+  const auto session_id = command.getWriteSessionId();
+  if (session_id == 0) return;
+  getEbusController().cancel(session_id);
+  command.setWriteSessionId(0);
+  uint32_t request_id = 0;
+  for (auto& trace : write_traces_) {
+    if (trace.session_id == session_id) {
+      trace.superseded = true;
+      request_id = trace.request_id;
+      break;
+    }
+  }
+  char detail[160];
+  snprintf(detail, sizeof(detail), "reason=%s replacement_req=%lu",
+           reason, static_cast<unsigned long>(replacement_request_id));
+  writeLog(request_id, command.getKey(), "superseded", detail, session_id);
+}
+
+void CommandManager::trackWrite(uint32_t request_id, uint8_t key_id,
+                                 uint32_t session_id, ebus::ByteView message) {
+  // Bounded diagnostic history only; eviction never changes bus scheduling.
+  if (write_traces_.size() == write_traces_.capacity()) {
+    write_traces_.erase(write_traces_.begin());
+  }
+  write_traces_.push_back({request_id, session_id, key_id, false, false});
+  writeLog(request_id, StringPool::instance().lookup(key_id), "bus_queued",
+           "telegram=" + ebus::toString(message), session_id);
+}
+
+void CommandManager::handleWriteResult(const ebus::ProtocolInfo& info) {
+  if (info.session_id == 0) return;
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  for (auto& trace : write_traces_) {
+    if (trace.session_id != info.session_id || trace.terminal_logged) continue;
+    const auto key = StringPool::instance().lookup(trace.key_id);
+    if (trace.superseded) {
+      trace.terminal_logged = true;
+      writeLog(trace.request_id, key,
+               info.is_error ? "bus_error_superseded" : "bus_success_superseded",
+               "readback_suppressed", info.session_id);
+    } else if (info.is_error && info.protocol_error == ebus::ProtocolError::arbitration_lost) {
+      trace.terminal_logged = true;
+      char detail[128];
+      snprintf(detail, sizeof(detail), "reason=arbitration_attempts_exhausted attempts=%u",
+               info.attempts);
+      writeLog(trace.request_id, key, "bus_failed", detail, info.session_id);
+    } else if (info.is_error) {
+      char detail[192];
+      snprintf(detail, sizeof(detail), "error=%s attempts=%u retries=library_managed",
+               ebus::toString(info.protocol_error), info.attempts);
+      writeLog(trace.request_id, key, "bus_error", detail, info.session_id);
+    } else {
+      trace.terminal_logged = true;
+      writeLog(trace.request_id, key, "bus_success",
+               "device_value_not_yet_confirmed", info.session_id);
+    }
+    break;
+  }
+
+  // Functional session tracking lives on the command, independently of the
+  // bounded diagnostic history. Late results for superseded writes cannot
+  // trigger readback for a newer value.
+  for (auto& command : commands_) {
+    if (command.getWriteSessionId() != info.session_id) continue;
+    if (!info.is_error) {
+      command.setWriteSessionId(0);
+      requestCommandRead(command);
+    } else if (info.protocol_error == ebus::ProtocolError::arbitration_lost ||
+               info.protocol_error == ebus::ProtocolError::invalid_message) {
+      command.setWriteSessionId(0);
+    }
+    break;
+  }
 }
 
 void CommandManager::fetchValues(const ebus::JsonChunkVisitor& visitor) const {

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "system/firmware_version.hpp"
 #if defined(EBUS_INTERNAL)
 #include "app/mqtt.hpp"
 
@@ -10,6 +11,7 @@
 
 #include "app/app_limits.hpp"
 #include "app/command_manager.hpp"
+#include "app/command_read.hpp"
 #include "app/ebus_accessor.hpp"
 #include "app/mqtt_ha.hpp"
 #include "ebus/detail/json_reader.hpp"
@@ -393,7 +395,7 @@ void Mqtt::taskFunc(void* arg) {
                   "uptime",
                   static_cast<uint32_t>(esp_timer_get_time() / 1000000ULL));
               writer.writeField("reset_code", DeviceStatus::resetCode());
-              writer.writeField("version", AUTO_VERSION);
+              writer.writeField("version", firmwareVersion());
               writer.writeField("build", __DATE__ " " __TIME__);
               {
                 auto heap = writer.objectScope("heap");
@@ -666,7 +668,7 @@ void Mqtt::handleRead(std::string_view payload) {
 
   Command* command = command_manager.findCommand(key_view);
   if (command != nullptr) {
-    command->setLast(0);  // Trigger immediate physical poll
+    requestCommandRead(*command);  // Queue an actual one-shot bus read
     handleValueUpdate(key_view);
   } else {  // Use snprintf for error response
     char err_buf[128];
@@ -742,7 +744,10 @@ void Mqtt::handleWrite(std::string_view payload) {
         publishResponse("write", "Invalid write command format");
         return;
       }
-      getEbusController().enqueue(app::priority::send, full_write);
+      if (!command_manager.queueWrite(command->getKey(), full_write, 0, val_view)) {
+        publishResponse("write", "Unable to queue write command");
+        return;
+      }
       publishStream("response", 0, false,
                     [command, key_view](const ebus::JsonChunkVisitor& v) {
                       ebus::detail::JsonWriter writer(v);
@@ -756,7 +761,6 @@ void Mqtt::handleWrite(std::string_view payload) {
                                command->getName().data());
                       writer.writeField("status", status_buf);
                     });
-      command->setLast(0);
     } else {
       // Use snprintf for error response
       publishStream("response", 0, false,
@@ -817,8 +821,10 @@ void Mqtt::handleDirectWrite(std::string_view key, std::string_view val_view) {
       logger.warn("Invalid write command format");
       return;
     }
-    getEbusController().enqueue(app::priority::send, full_write);
-    command->setLast(0);
+    if (!command_manager.queueWrite(command->getKey(), full_write, 0, val_view)) {
+      logger.warn("[MQTT] Unable to queue write command");
+      return;
+    }
     char buf[128];
     snprintf(buf, sizeof(buf), "[MQTT] Scheduled write for '%.*s'",
              (int)key.size(), key.data());

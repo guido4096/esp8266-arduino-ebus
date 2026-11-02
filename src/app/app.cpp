@@ -211,7 +211,8 @@ bool App::initServices() {
   runtime_config.device.max_startup_scans = 5;
 
   // Scheduler
-  runtime_config.scheduler.max_attempts = 1;
+  // Three total attempts allow recovery from normal bus contention.
+  runtime_config.scheduler.max_attempts = 3;
   runtime_config.scheduler.base_backoff_ms = 100;
   runtime_config.scheduler.fsm_timeout_ms = 1000;
   runtime_config.scheduler.total_timeout_ms = 2000;
@@ -250,7 +251,8 @@ bool App::initServices() {
   runtime_config.device.max_startup_scans = 5;
 
   // Scheduler
-  runtime_config.scheduler.max_attempts = 1;
+  // Three total attempts allow recovery from normal bus contention.
+  runtime_config.scheduler.max_attempts = 3;
   runtime_config.scheduler.base_backoff_ms = 100;
   runtime_config.scheduler.fsm_timeout_ms = 1000;
   runtime_config.scheduler.total_timeout_ms = 2000;
@@ -468,7 +470,10 @@ void App::loop() {
   // the end of app_main deletes the main task and frees its stack out from
   // under all still-running service tasks (use-after-free, heap poison).
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
+#if defined(EBUS_INTERNAL)
+    command_manager.processDelayedWrites();
+#endif
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
@@ -480,6 +485,7 @@ void App::stop() {
   mqtt_.stopTask();
 
   // Now safe to stop other components
+  command_manager.cancelWrites();
   cron.stop();
   stopEbus();
   monitor_.stop();
